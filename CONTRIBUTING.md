@@ -5,16 +5,18 @@
 - Go (version from `go.mod`)
 - Varnish 7.6 (required for integration tests)
 
-Install Varnish on Debian/Ubuntu:
+Install Varnish Cache on Debian/Ubuntu:
 
 ```sh
-curl -fsSL https://packagecloud.io/varnishcache/varnish76/gpgkey | \
-  gpg --dearmor | sudo tee /usr/share/keyrings/varnish.gpg > /dev/null
-echo "deb [signed-by=/usr/share/keyrings/varnish.gpg] \
-  https://packagecloud.io/varnishcache/varnish76/ubuntu/ \
-  $(lsb_release -cs) main" | \
-  sudo tee /etc/apt/sources.list.d/varnish.list
-sudo apt-get update -qq && sudo apt-get install -y varnish
+curl -Ls https://packages.varnish-software.com/varnish/bootstrap-deb.sh | sudo bash
+sudo apt-get install -y varnish varnish-dev
+```
+
+Or Varnish Enterprise:
+
+```sh
+curl -s https://packagecloud.io/install/repositories/varnishplus/60-enterprise/script.deb.sh | sudo INSTALL= bash
+sudo apt-get install -y varnish-plus varnish-plus-dev
 ```
 
 ## Running tests
