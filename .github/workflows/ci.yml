@@ -28,7 +28,7 @@ jobs:
             $(lsb_release -cs) main" | \
             sudo tee /etc/apt/sources.list.d/varnish.list
           sudo apt-get update -qq
-          sudo apt-get install -y varnish
+          sudo apt-get install -y varnish varnish-dev
 
       - name: Build
         run: go build -v ./...

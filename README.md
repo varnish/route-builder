@@ -1,5 +1,7 @@
 # route-builder
 
+[![CI](https://github.com/varnish/route-builder/actions/workflows/ci.yml/badge.svg)](https://github.com/varnish/route-builder/actions/workflows/ci.yml)
+
 Run multiple sites on a single [Varnish Cache](https://varnish.org/) instance — each with its own VCL, its own TLS certificates, and zero downtime when configuration changes.
 
 Give every domain its own config file:
