@@ -60,7 +60,7 @@ Pass a single `.yaml`/`.yml` file, or one or more `.vcl` files with embedded rou
 ## Installation
 
 ```bash
-go install github.com/varnish/route-builder@latest
+go install github.com/varnish/route-builder/cmd/route-builder@latest
 ```
 
 Or build from source:
@@ -68,7 +68,25 @@ Or build from source:
 ```bash
 git clone https://github.com/varnish/route-builder
 cd route-builder
-go build -o route-builder .
+go build -o route-builder ./cmd/route-builder
+```
+
+The module root is also importable as a Go library:
+
+```go
+import routebuilder "github.com/varnish/route-builder"
+
+configs, err := routebuilder.ParseRoutes("routes.yaml")
+if err != nil {
+    // handle error
+}
+if err := routebuilder.ValidateConfigs(configs); err != nil {
+    // handle error
+}
+ts := routebuilder.NewTimestamp()
+routingVCL, err := routebuilder.BuildRoutingVCL(configs, ts)
+cmdfile, err := routebuilder.BuildCmdfile(configs, "/etc/varnish/routing.vcl", ts)
+_, _ = routingVCL, cmdfile
 ```
 
 A systemd service unit is provided in [`contrib/systemd/`](contrib/systemd/) for production deployments.

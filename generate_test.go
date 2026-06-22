@@ -1,4 +1,4 @@
-package main
+package routebuilder
 
 import (
 	"strings"
@@ -31,7 +31,7 @@ func TestBuildRoutingVCL(t *testing.T) {
 	}
 
 	const ts = "2024-01-15T10-30-45_0"
-	got, err := buildRoutingVCL(configs, ts)
+	got, err := BuildRoutingVCL(configs, ts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestBuildCmdfile(t *testing.T) {
 	}
 
 	const ts = "2024-01-15T10-30-45_0"
-	got, err := buildCmdfile(configs, "/etc/vcl/routing.vcl", ts)
+	got, err := BuildCmdfile(configs, "/etc/vcl/routing.vcl", ts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestBuildCmdfileTLS(t *testing.T) {
 		},
 	}
 
-	got, err := buildCmdfile(configs, "/etc/vcl/routing.vcl", ts)
+	got, err := BuildCmdfile(configs, "/etc/vcl/routing.vcl", ts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestBuildCmdfileNoVclPath(t *testing.T) {
 		{Name: "foo_service", VclPath: "/etc/varnish/foo.vcl"},
 	}
 	const ts = "2024-01-15T10-30-45_0"
-	got, err := buildCmdfile(configs, "/etc/vcl/routing.vcl", ts)
+	got, err := BuildCmdfile(configs, "/etc/vcl/routing.vcl", ts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestBuildCmdfileNoVclPath(t *testing.T) {
 
 func TestWriteOutputStdout(t *testing.T) {
 	var buf strings.Builder
-	if err := writeOutput("-", "hello world", &buf); err != nil {
+	if err := WriteOutput("-", "hello world", &buf); err != nil {
 		t.Fatal(err)
 	}
 	if buf.String() != "hello world" {

@@ -1,4 +1,4 @@
-package main
+package routebuilder
 
 import (
 	"context"
@@ -34,7 +34,10 @@ func vclRollback(ctx context.Context, conn *adm.Conn, hasStagedTLS bool, routing
 	}
 }
 
-func reloadVarnish(ctx context.Context, conn *adm.Conn, configs []VCLConfig, timestamp string, stderr io.Writer) error {
+// ReloadVarnish performs an 8-stage live reload of Varnish with the given configurations.
+// It loads new VCLs, creates labels, loads TLS certs, and activates the new routing VCL.
+// On failure before activation (stage 6), it rolls back all changes.
+func ReloadVarnish(ctx context.Context, conn *adm.Conn, configs []VCLConfig, timestamp string, stderr io.Writer) error {
 	// Stage 1: snapshot route-builder VCLs, labels, and cert IDs for cleanup.
 	vclList, err := conn.VCLList(ctx)
 	if err != nil {
@@ -42,7 +45,7 @@ func reloadVarnish(ctx context.Context, conn *adm.Conn, configs []VCLConfig, tim
 	}
 	var snapshot []string
 	for name := range vclList {
-		for _, prefix := range []string{prefixRouting, prefixLabel, prefixVCL} {
+		for _, prefix := range []string{PrefixRouting, PrefixLabel, PrefixVCL} {
 			if strings.HasPrefix(name, prefix) {
 				snapshot = append(snapshot, name)
 				break
@@ -70,7 +73,7 @@ func reloadVarnish(ctx context.Context, conn *adm.Conn, configs []VCLConfig, tim
 	} else {
 		seen := make(map[string]bool)
 		for _, e := range oldCertEntries {
-			if strings.HasPrefix(e.ID, prefixCert) && !seen[e.ID] {
+			if strings.HasPrefix(e.ID, PrefixCert) && !seen[e.ID] {
 				oldCertIDs = append(oldCertIDs, e.ID)
 				seen[e.ID] = true
 			}
@@ -88,13 +91,13 @@ func reloadVarnish(ctx context.Context, conn *adm.Conn, configs []VCLConfig, tim
 			vclRollback(ctx, conn, hasStagedTLS, routingVCLName, loadedLabels, loadedVCLs, stderr)
 			return fmt.Errorf("route %q: VclPath is empty after validation", cfg.Name)
 		}
-		vclName := fmt.Sprintf("%s%s-%s", prefixVCL, cfg.Name, timestamp)
+		vclName := fmt.Sprintf("%s%s-%s", PrefixVCL, cfg.Name, timestamp)
 		if err := conn.VCLLoad(ctx, vclName, cfg.VclPath, adm.VCLStateAuto); err != nil {
 			vclRollback(ctx, conn, hasStagedTLS, routingVCLName, loadedLabels, loadedVCLs, stderr)
 			return fmt.Errorf("vcl.load %s: %w", vclName, err)
 		}
 		loadedVCLs = append(loadedVCLs, vclName)
-		labelName := fmt.Sprintf("%s%s-%s", prefixLabel, cfg.Name, timestamp)
+		labelName := fmt.Sprintf("%s%s-%s", PrefixLabel, cfg.Name, timestamp)
 		if err := conn.VCLLabel(ctx, labelName, vclName); err != nil {
 			vclRollback(ctx, conn, hasStagedTLS, routingVCLName, loadedLabels, loadedVCLs, stderr)
 			return fmt.Errorf("vcl.label %s: %w", labelName, err)
@@ -103,8 +106,8 @@ func reloadVarnish(ctx context.Context, conn *adm.Conn, configs []VCLConfig, tim
 	}
 
 	// Stage 3: compile and load routing VCL inline with matching timestamp
-	routingVCLName = prefixRouting + timestamp
-	routingContent, err := buildRoutingVCL(configs, timestamp)
+	routingVCLName = PrefixRouting + timestamp
+	routingContent, err := BuildRoutingVCL(configs, timestamp)
 	if err != nil {
 		vclRollback(ctx, conn, hasStagedTLS, "", loadedLabels, loadedVCLs, stderr)
 		return fmt.Errorf("build routing VCL: %w", err)
@@ -119,7 +122,7 @@ func reloadVarnish(ctx context.Context, conn *adm.Conn, configs []VCLConfig, tim
 	// prefix, and reloading the same cert file never collides with the new ID.
 	for _, cfg := range configs {
 		for i, t := range cfg.TLS {
-			certID := fmt.Sprintf("%s%s-%d-%s", prefixCert, cfg.Name, i, timestamp)
+			certID := fmt.Sprintf("%s%s-%d-%s", PrefixCert, cfg.Name, i, timestamp)
 			var opts []adm.TLSOption
 			opts = append(opts, adm.TLSWithCertID(certID))
 			if t.Key != "" {
@@ -161,7 +164,7 @@ func reloadVarnish(ctx context.Context, conn *adm.Conn, configs []VCLConfig, tim
 			fmt.Fprintf(stderr, "warning: cleanup %s: %v\n", name, err)
 		}
 	}
-	for _, prefix := range []string{prefixRouting, prefixLabel, prefixVCL} {
+	for _, prefix := range []string{PrefixRouting, PrefixLabel, PrefixVCL} {
 		for _, name := range snapshot {
 			if strings.HasPrefix(name, prefix) {
 				warnDiscard(name, conn.VCLDiscard(ctx, name))

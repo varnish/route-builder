@@ -1,11 +1,8 @@
-package main
+package routebuilder
 
 import (
 	"bytes"
 	"fmt"
-	"io"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"text/template"
@@ -55,7 +52,7 @@ sub vcl_recv {
     }
 {{- range .Configs}}
     if ({{hostCond .Hostnames}}) {
-        return(vcl(rb-label-{{.Name}}-{{$.Timestamp}}));
+        return(vcl({{$.PrefixLabel}}{{.Name}}-{{$.Timestamp}}));
     }
 {{- end}}
     return(synth(404, "No route matched"));
@@ -65,22 +62,37 @@ sub vcl_recv {
 var cmdfileTmpl = template.Must(template.New("cmdfile").Funcs(template.FuncMap{
 	"q": quoteCLIArg,
 }).Parse(
-	`{{.TLSLines}}{{range .Configs}}vcl.load rb-vcl-{{.Name}}-{{$.Timestamp}} {{q .VclPath}}
-vcl.label rb-label-{{.Name}}-{{$.Timestamp}} rb-vcl-{{.Name}}-{{$.Timestamp}}
-{{end}}vcl.load rb-routing-{{.Timestamp}} {{q .RoutingPath}}
-vcl.use rb-routing-{{.Timestamp}}
+	`{{.TLSLines}}{{range .Configs}}vcl.load {{$.PrefixVCL}}{{.Name}}-{{$.Timestamp}} {{q .VclPath}}
+vcl.label {{$.PrefixLabel}}{{.Name}}-{{$.Timestamp}} {{$.PrefixVCL}}{{.Name}}-{{$.Timestamp}}
+{{end}}vcl.load {{.PrefixRouting}}{{.Timestamp}} {{q .RoutingPath}}
+vcl.use {{.PrefixRouting}}{{.Timestamp}}
 `))
 
-type cmdfileData struct {
+type routingVCLDataInternal struct {
 	Configs     []VCLConfig
-	RoutingPath string
 	Timestamp   string
-	TLSLines    string
+	PrefixLabel string
 }
 
-func buildRoutingVCL(configs []VCLConfig, timestamp string) (string, error) {
+type cmdfileData struct {
+	Configs       []VCLConfig
+	RoutingPath   string
+	Timestamp     string
+	TLSLines      string
+	PrefixVCL     string
+	PrefixLabel   string
+	PrefixRouting string
+}
+
+// BuildRoutingVCL generates the routing VCL content for the given configurations.
+func BuildRoutingVCL(configs []VCLConfig, timestamp string) (string, error) {
 	var buf bytes.Buffer
-	if err := routingTmpl.Execute(&buf, routingVCLData{Configs: configs, Timestamp: timestamp}); err != nil {
+	data := routingVCLDataInternal{
+		Configs:     configs,
+		Timestamp:   timestamp,
+		PrefixLabel: PrefixLabel,
+	}
+	if err := routingTmpl.Execute(&buf, data); err != nil {
 		return "", err
 	}
 	return buf.String(), nil
@@ -94,11 +106,12 @@ func quoteCLIArg(s string) string {
 	return `"` + s + `"`
 }
 
-func buildCmdfile(configs []VCLConfig, routingPath string, timestamp string) (string, error) {
+// BuildCmdfile generates the cmdfile content for the given configurations.
+func BuildCmdfile(configs []VCLConfig, routingPath string, timestamp string) (string, error) {
 	var lines []string
 	for _, cfg := range configs {
 		for i, t := range cfg.TLS {
-			certID := fmt.Sprintf("%s%s-%d-%s", prefixCert, cfg.Name, i, timestamp)
+			certID := fmt.Sprintf("%s%s-%d-%s", PrefixCert, cfg.Name, i, timestamp)
 			if t.PEM != "" {
 				lines = append(lines, "tls.cert.load "+certID+" "+quoteCLIArg(t.PEM))
 			} else {
@@ -112,53 +125,15 @@ func buildCmdfile(configs []VCLConfig, routingPath string, timestamp string) (st
 	}
 	var buf bytes.Buffer
 	if err := cmdfileTmpl.Execute(&buf, cmdfileData{
-		Configs:     configs,
-		RoutingPath: routingPath,
-		Timestamp:   timestamp,
-		TLSLines:    tlsLines,
+		Configs:       configs,
+		RoutingPath:   routingPath,
+		Timestamp:     timestamp,
+		TLSLines:      tlsLines,
+		PrefixVCL:     PrefixVCL,
+		PrefixLabel:   PrefixLabel,
+		PrefixRouting: PrefixRouting,
 	}); err != nil {
 		return "", err
 	}
 	return buf.String(), nil
-}
-
-func writeFileAtomic(path, content string) error {
-	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, ".route-builder-*")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	_, writeErr := f.WriteString(content)
-	syncErr := f.Sync()
-	closeErr := f.Close()
-	if writeErr != nil {
-		os.Remove(tmp)
-		return writeErr
-	}
-	if syncErr != nil {
-		os.Remove(tmp)
-		return syncErr
-	}
-	if closeErr != nil {
-		os.Remove(tmp)
-		return closeErr
-	}
-	if err := os.Chmod(tmp, 0644); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	return nil
-}
-
-func writeOutput(path, content string, stdout io.Writer) error {
-	if path == "-" {
-		_, err := fmt.Fprint(stdout, content)
-		return err
-	}
-	return writeFileAtomic(path, content)
 }
