@@ -1,0 +1,39 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build binaries
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          LDFLAGS="-X main.Version=${VERSION}"
+          GOOS=linux GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o route-builder-linux-amd64 .
+          GOOS=linux GOARCH=arm64 go build -ldflags="${LDFLAGS}" -o route-builder-linux-arm64 .
+          sha256sum route-builder-linux-amd64 route-builder-linux-arm64 > checksums.txt
+
+      - name: Create release
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "route-builder $GITHUB_REF_NAME" \
+            --generate-notes \
+            route-builder-linux-amd64 \
+            route-builder-linux-arm64 \
+            checksums.txt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,6 @@
+vcl.load rb-vcl-foo_service-2026-06-22T11-13-12_530331864 "/home/guillaume/work/route-builder/testdata/foo.vcl"
+vcl.label rb-label-foo_service-2026-06-22T11-13-12_530331864 rb-vcl-foo_service-2026-06-22T11-13-12_530331864
+vcl.load rb-vcl-bar_service-2026-06-22T11-13-12_530331864 "/home/guillaume/work/route-builder/testdata/bar.vcl"
+vcl.label rb-label-bar_service-2026-06-22T11-13-12_530331864 rb-vcl-bar_service-2026-06-22T11-13-12_530331864
+vcl.load rb-routing-2026-06-22T11-13-12_530331864 "/home/guillaume/work/route-builder/testdata/routing.vcl"
+vcl.use rb-routing-2026-06-22T11-13-12_530331864

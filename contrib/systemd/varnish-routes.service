@@ -1,0 +1,40 @@
+[Unit]
+Description=Varnish HTTP accelerator (route-builder managed)
+Documentation=https://www.varnish-cache.org/docs/
+After=network-online.target
+Conflicts=varnish.service
+
+[Service]
+Type=forking
+LimitNOFILE=131072
+LimitMEMLOCK=82000
+
+# Build /etc/varnish/routing.yaml from per-site VCL files.
+# Comment out this line to supply /etc/varnish/routing.yaml directly.
+ExecStartPre=/usr/local/bin/route-builder -yamlfile /etc/varnish/routing.yaml /etc/varnish/sites/*.vcl
+
+# Generate /etc/varnish/routing.vcl and /etc/varnish/cmdfile from routing.yaml.
+ExecStartPre=/usr/local/bin/route-builder /etc/varnish/routing.yaml
+
+ExecStart=/usr/sbin/varnishd \
+  -j unix,user=vcache \
+  -a 0.0.0.0:80,HTTP \
+  -a 0.0.0.0:443,HTTPS \
+  -f "" \
+  -I /etc/varnish/cmdfile \
+  -s malloc,256m
+
+# Rebuild /etc/varnish/routing.yaml from per-site VCL files.
+# Comment out this line to supply /etc/varnish/routing.yaml directly.
+ExecReload=/usr/local/bin/route-builder -yamlfile /etc/varnish/routing.yaml /etc/varnish/sites/*.vcl
+
+# Hot-reload Varnish from routing.yaml (generates new VCL names and activates them live).
+ExecReload=/usr/local/bin/route-builder -reload /etc/varnish/routing.yaml
+
+ReadWritePaths=/etc/varnish
+ReadWritePaths=/var/lib/varnish
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
