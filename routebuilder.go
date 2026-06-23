@@ -22,6 +22,12 @@
 //	vcl, _ := routebuilder.BuildRoutingVCL(configs, timestamp)
 //	cmdfile, _ := routebuilder.BuildCmdfile(configs, "/etc/varnish/routing.vcl", timestamp)
 //
+//	// Or build a reusable command plan that can skip already-loaded VCL objects
+//	plan, _ := routebuilder.BuildCmdfilePlan(configs, "/etc/varnish/routing.vcl", timestamp, routebuilder.CmdfileOptions{
+//	    ExistingVCLNames: map[string]bool{},
+//	})
+//	_ = plan.Commands()
+//
 //	// Write files
 //	routebuilder.WriteFileAtomic("/etc/varnish/routing.vcl", vcl)
 //	routebuilder.WriteFileAtomic("/etc/varnish/cmdfile", cmdfile)

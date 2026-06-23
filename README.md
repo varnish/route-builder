@@ -153,6 +153,25 @@ Names may contain hyphens and underscores, must start with a letter, and are lim
 
 The public `BuildRoutingVCL` and `BuildCmdfile` APIs validate generated object-name components before rendering so direct library callers get an error instead of malformed VCL or CLI output.
 
+### Cmdfile planning and cleanup
+
+Library callers that manage a live Varnish instance can build a reusable command plan instead of rendering a flat cmdfile directly:
+
+```go
+plan, err := routebuilder.BuildCmdfilePlan(configs, "/etc/varnish/routing.vcl", ts, routebuilder.CmdfileOptions{
+    ExistingVCLNames: existingNames,
+})
+if err != nil {
+    // handle error
+}
+for _, command := range plan.Commands() {
+    // apply with varnishadm or write to a cmdfile
+    _ = command
+}
+```
+
+`ExistingVCLNames` skips `vcl.load` and `vcl.label` commands whose target objects already exist; `vcl.use` is still emitted. For cleanup, use `ManagedVCLNames` to compute the current keep set and `CleanupCommandsFromNames` to produce dependency-ordered `vcl.discard` commands for stale `rb-*` VCL objects.
+
 ### TLS
 
 Each route can carry one or more TLS certificates — either a PEM bundle or a separate cert + key pair:

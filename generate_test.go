@@ -92,6 +92,85 @@ func TestBuildCmdfile(t *testing.T) {
 	}
 }
 
+func TestBuildCmdfilePlanWithExisting(t *testing.T) {
+	configs := []VCLConfig{
+		{Name: "foo_service", VclPath: "/etc/vcl/foo.vcl"},
+		{Name: "bar_service", VclPath: "/etc/vcl/bar.vcl"},
+	}
+	const ts = "2024-01-15T10-30-45_0"
+	existing := map[string]bool{
+		RouteVCLName(configs[0], ts):   true,
+		RouteLabelName(configs[0], ts): true,
+		RoutingVCLName(ts):             true,
+	}
+
+	plan, err := BuildCmdfilePlan(configs, "/etc/vcl/routing.vcl", ts, CmdfileOptions{ExistingVCLNames: existing})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := plan.String()
+	for _, notWant := range []string{
+		`vcl.load rb-vcl-foo_service-2024-01-15T10-30-45_0`,
+		`vcl.label rb-label-foo_service-2024-01-15T10-30-45_0`,
+		`vcl.load rb-routing-2024-01-15T10-30-45_0`,
+	} {
+		if strings.Contains(got, notWant) {
+			t.Errorf("did not expect %q in output:\n%s", notWant, got)
+		}
+	}
+	for _, want := range []string{
+		`vcl.load rb-vcl-bar_service-2024-01-15T10-30-45_0 "/etc/vcl/bar.vcl"`,
+		`vcl.label rb-label-bar_service-2024-01-15T10-30-45_0 rb-vcl-bar_service-2024-01-15T10-30-45_0`,
+		`vcl.use rb-routing-2024-01-15T10-30-45_0`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("want %q in output:\n%s", want, got)
+		}
+	}
+}
+
+func TestBuildCmdfileWithExisting(t *testing.T) {
+	configs := []VCLConfig{{Name: "foo_service", VclPath: "/etc/vcl/foo.vcl"}}
+	const ts = "2024-01-15T10-30-45_0"
+	existing := map[string]bool{RouteVCLName(configs[0], ts): true}
+	got, err := BuildCmdfileWithExisting(configs, "/etc/vcl/routing.vcl", ts, existing)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(got, `vcl.load rb-vcl-foo_service-2024-01-15T10-30-45_0`) {
+		t.Errorf("existing vcl should not be loaded:\n%s", got)
+	}
+	if !strings.Contains(got, `vcl.label rb-label-foo_service-2024-01-15T10-30-45_0 rb-vcl-foo_service-2024-01-15T10-30-45_0`) {
+		t.Errorf("missing label command for existing vcl:\n%s", got)
+	}
+}
+
+func TestCleanupCommandsFromNames(t *testing.T) {
+	names := []string{
+		"rb-vcl-stale-b",
+		"rb-label-stale-a",
+		"rb-routing-old",
+		"rb-vcl-keep",
+		"rb-label-keep",
+		"rb-routing-current",
+		"unrelated",
+	}
+	keep := map[string]bool{
+		"rb-vcl-keep":        true,
+		"rb-label-keep":      true,
+		"rb-routing-current": true,
+	}
+	got := strings.Join(CleanupCommandsFromNames(names, keep), "\n")
+	want := strings.Join([]string{
+		"vcl.discard rb-routing-old",
+		"vcl.discard rb-label-stale-a",
+		"vcl.discard rb-vcl-stale-b",
+	}, "\n")
+	if got != want {
+		t.Fatalf("want:\n%s\ngot:\n%s", want, got)
+	}
+}
+
 func TestBuildCmdfileTLS(t *testing.T) {
 	const ts = "2024-01-15T10-30-45_0"
 

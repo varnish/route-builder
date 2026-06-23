@@ -45,11 +45,8 @@ func ReloadVarnish(ctx context.Context, conn *adm.Conn, configs []VCLConfig, tim
 	}
 	var snapshot []string
 	for name := range vclList {
-		for _, prefix := range []string{PrefixRouting, PrefixLabel, PrefixVCL} {
-			if strings.HasPrefix(name, prefix) {
-				snapshot = append(snapshot, name)
-				break
-			}
+		if IsManagedVCLName(name) {
+			snapshot = append(snapshot, name)
 		}
 	}
 
@@ -91,13 +88,13 @@ func ReloadVarnish(ctx context.Context, conn *adm.Conn, configs []VCLConfig, tim
 			vclRollback(ctx, conn, hasStagedTLS, routingVCLName, loadedLabels, loadedVCLs, stderr)
 			return fmt.Errorf("route %q: VclPath is empty after validation", cfg.Name)
 		}
-		vclName := fmt.Sprintf("%s%s-%s", PrefixVCL, cfg.Name, timestamp)
+		vclName := RouteVCLName(cfg, timestamp)
 		if err := conn.VCLLoad(ctx, vclName, cfg.VclPath, adm.VCLStateAuto); err != nil {
 			vclRollback(ctx, conn, hasStagedTLS, routingVCLName, loadedLabels, loadedVCLs, stderr)
 			return fmt.Errorf("vcl.load %s: %w", vclName, err)
 		}
 		loadedVCLs = append(loadedVCLs, vclName)
-		labelName := fmt.Sprintf("%s%s-%s", PrefixLabel, cfg.Name, timestamp)
+		labelName := RouteLabelName(cfg, timestamp)
 		if err := conn.VCLLabel(ctx, labelName, vclName); err != nil {
 			vclRollback(ctx, conn, hasStagedTLS, routingVCLName, loadedLabels, loadedVCLs, stderr)
 			return fmt.Errorf("vcl.label %s: %w", labelName, err)
@@ -106,7 +103,7 @@ func ReloadVarnish(ctx context.Context, conn *adm.Conn, configs []VCLConfig, tim
 	}
 
 	// Stage 3: compile and load routing VCL inline with matching timestamp
-	routingVCLName = PrefixRouting + timestamp
+	routingVCLName = RoutingVCLName(timestamp)
 	routingContent, err := BuildRoutingVCL(configs, timestamp)
 	if err != nil {
 		vclRollback(ctx, conn, hasStagedTLS, "", loadedLabels, loadedVCLs, stderr)
@@ -122,7 +119,7 @@ func ReloadVarnish(ctx context.Context, conn *adm.Conn, configs []VCLConfig, tim
 	// prefix, and reloading the same cert file never collides with the new ID.
 	for _, cfg := range configs {
 		for i, t := range cfg.TLS {
-			certID := fmt.Sprintf("%s%s-%d-%s", PrefixCert, cfg.Name, i, timestamp)
+			certID := TLSCertID(cfg, i, timestamp)
 			var opts []adm.TLSOption
 			opts = append(opts, adm.TLSWithCertID(certID))
 			if t.Key != "" {
@@ -164,12 +161,8 @@ func ReloadVarnish(ctx context.Context, conn *adm.Conn, configs []VCLConfig, tim
 			fmt.Fprintf(stderr, "warning: cleanup %s: %v\n", name, err)
 		}
 	}
-	for _, prefix := range []string{PrefixRouting, PrefixLabel, PrefixVCL} {
-		for _, name := range snapshot {
-			if strings.HasPrefix(name, prefix) {
-				warnDiscard(name, conn.VCLDiscard(ctx, name))
-			}
-		}
+	for _, name := range CleanupVCLNamesFromNames(snapshot, ManagedVCLNames(configs, timestamp)) {
+		warnDiscard(name, conn.VCLDiscard(ctx, name))
 	}
 
 	// Stage 8: discard previous rb-cert-* entries now that the new certs are active.

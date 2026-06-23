@@ -16,7 +16,8 @@ The tool reads per-service VCL files with YAML frontmatter, or a YAML routes man
 | `config.go` | Public config types plus validation helpers (`ValidateConfigs`, duplicate hostname/name checks, TLS validation). |
 | `parse.go` | Frontmatter and routes-manifest parsing (`ParseVCL`, `ParseRoutes`, `MarshalRoutes`). |
 | `helpers.go` | Public CLI/library helpers (`ExpandGlobs`, file-extension helpers, `NewTimestamp`, `FindRoute`). |
-| `generate.go` | Public VCL/cmdfile template rendering (`BuildRoutingVCL`, `BuildCmdfile`). |
+| `generate.go` | Public routing VCL rendering and cmdfile wrapper (`BuildRoutingVCL`, `BuildCmdfile`). |
+| `plan.go` | Public cmdfile planning, generated object-name helpers, and cleanup command planning. |
 | `reload.go` | Public 8-stage live reload via Varnish admin protocol (`ReloadVarnish`) plus rollback helper. |
 | `write.go` | Public output helpers (`WriteFileAtomic`, `WriteOutput`). |
 | `cmd/route-builder/main.go` | CLI entry point, flag parsing, input detection, and orchestration. |
@@ -143,13 +144,15 @@ Parsed by `ParseRoutes`. File existence is checked for `vclPath` and all TLS pat
 
 ### Cmdfile
 
-`BuildCmdfile` renders `cmdfileTmpl` in Varnish-safe dependency order:
+`BuildCmdfile` is a convenience wrapper around `BuildCmdfilePlan(...).String()`. `BuildCmdfilePlan` creates commands in Varnish-safe dependency order:
 
 1. `tls.cert.load rb-cert-<name>-<idx>-<timestamp> ...` lines
 2. `tls.cert.commit` when any TLS certs were loaded
 3. per-route `vcl.load rb-vcl-...` and `vcl.label rb-label-... rb-vcl-...`
 4. `vcl.load rb-routing-<timestamp> <routingPath>`
 5. `vcl.use rb-routing-<timestamp>`
+
+Pass `CmdfileOptions{ExistingVCLNames: set}` to skip `vcl.load` / `vcl.label` commands whose target VCL objects already exist. The final `vcl.use` is always emitted.
 
 ---
 
@@ -165,7 +168,7 @@ Parsed by `ParseRoutes`. File existence is checked for `vclPath` and all TLS pat
 | 4 | Load TLS certificates with explicit `rb-cert-*` IDs. |
 | 5 | Commit TLS certificates. |
 | 6 | Activate the new routing VCL with `vcl.use` — point of no return. |
-| 7 | Discard old route-builder VCL objects from the snapshot. |
+| 7 | Discard old route-builder VCL objects from the snapshot using `CleanupVCLNamesFromNames`. |
 | 8 | Discard old `rb-cert-*` certs and commit cert cleanup. |
 
 ---
@@ -174,7 +177,9 @@ Parsed by `ParseRoutes`. File existence is checked for `vclPath` and all TLS pat
 
 Route names are embedded in generated Varnish object names and VCL `return(vcl(...))` targets. They must match `[a-zA-Z][a-zA-Z0-9_-]*`, may contain hyphens and underscores, must start with a letter, and are limited to 64 characters. The name `routing` is reserved.
 
-`BuildRoutingVCL` validates route names, hostnames, and timestamp. `BuildCmdfile` validates route names, `vclPath`, TLS entries, routing path, and timestamp. `ValidateConfigs` validates each full config and then checks duplicate names and overlapping hostnames.
+`BuildRoutingVCL` validates route names, hostnames, and timestamp. `BuildCmdfilePlan` / `BuildCmdfile` validate route names, `vclPath`, TLS entries, routing path, and timestamp. `ValidateConfigs` validates each full config and then checks duplicate names and overlapping hostnames.
+
+Generated object-name helpers live in `plan.go`: `RoutingVCLName`, `RouteVCLName`, `RouteLabelName`, `TLSCertID`, `ManagedVCLNames`, and `IsManagedVCLName`. Cleanup helpers `CleanupVCLNamesFromNames` and `CleanupCommandsFromNames` only target standard route-builder VCL object prefixes and return stale objects in discard-safe order: routing VCLs, labels, then per-route VCLs.
 
 ## Wildcard hostnames
 
