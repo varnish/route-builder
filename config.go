@@ -7,7 +7,12 @@ import (
 	"strings"
 )
 
-var validLabelName = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]*$`)
+const maxRouteNameLen = 64
+
+var (
+	validRouteName      = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]*$`)
+	validObjectNamePart = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+)
 
 // TLSEntry represents a TLS certificate configuration.
 // Either PEM must be set (single-file bundle), or both Key and Cert must be set.
@@ -19,6 +24,9 @@ type TLSEntry struct {
 
 // VCLConfig represents a single route configuration.
 type VCLConfig struct {
+	// Name is embedded in generated Varnish object names. It must match
+	// [a-zA-Z][a-zA-Z0-9_-]*, is limited to 64 characters, and must not be
+	// "routing".
 	Name       string     `yaml:"name"`
 	Hostnames  []string   `yaml:"hostnames"`
 	TLS        []TLSEntry `yaml:"tls"`
@@ -61,17 +69,8 @@ func normalizeHostnames(hostnames []string) []string {
 }
 
 func validateConfig(cfg VCLConfig) error {
-	if cfg.Name == "" {
-		return fmt.Errorf("missing required field: name")
-	}
-	if !validLabelName.MatchString(cfg.Name) {
-		return fmt.Errorf("name %q is not a valid VCL label name (must match [a-zA-Z][a-zA-Z0-9_]*)", cfg.Name)
-	}
-	if len(cfg.Name) > 64 {
-		return fmt.Errorf("name %q: exceeds 64-character limit", cfg.Name)
-	}
-	if cfg.Name == "routing" {
-		return fmt.Errorf("name %q is reserved", cfg.Name)
+	if err := validateRouteName(cfg.Name); err != nil {
+		return err
 	}
 	if len(cfg.Hostnames) == 0 {
 		return fmt.Errorf("missing required field: hostnames")
@@ -81,7 +80,37 @@ func validateConfig(cfg VCLConfig) error {
 			return err
 		}
 	}
-	for i, t := range cfg.TLS {
+	return validateTLS(cfg.TLS)
+}
+
+func validateRouteName(name string) error {
+	if name == "" {
+		return fmt.Errorf("missing required field: name")
+	}
+	if !validRouteName.MatchString(name) {
+		return fmt.Errorf("name %q is not a valid route name (must match [a-zA-Z][a-zA-Z0-9_-]*)", name)
+	}
+	if len(name) > maxRouteNameLen {
+		return fmt.Errorf("name %q: exceeds %d-character limit", name, maxRouteNameLen)
+	}
+	if name == "routing" {
+		return fmt.Errorf("name %q is reserved", name)
+	}
+	return nil
+}
+
+func validateObjectNamePart(name string, value string) error {
+	if value == "" {
+		return fmt.Errorf("%s is required", name)
+	}
+	if !validObjectNamePart.MatchString(value) {
+		return fmt.Errorf("%s %q is not a valid Varnish object name component (must match [a-zA-Z0-9_-]+)", name, value)
+	}
+	return nil
+}
+
+func validateTLS(entries []TLSEntry) error {
+	for i, t := range entries {
 		hasPEM := t.PEM != ""
 		hasKey := t.Key != ""
 		hasCert := t.Cert != ""
@@ -95,6 +124,35 @@ func validateConfig(cfg VCLConfig) error {
 		}
 	}
 	return nil
+}
+
+func validateRoutingConfig(cfg VCLConfig) error {
+	if err := validateRouteName(cfg.Name); err != nil {
+		return err
+	}
+	if len(cfg.Hostnames) == 0 {
+		return fmt.Errorf("route %q: missing required field: hostnames", cfg.Name)
+	}
+	for _, h := range cfg.Hostnames {
+		if err := validateHostname(h); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateCmdfileConfig(cfg VCLConfig) error {
+	if err := validateRouteName(cfg.Name); err != nil {
+		return err
+	}
+	if cfg.VclPath == "" {
+		return fmt.Errorf("route %q: vclPath: field is required", cfg.Name)
+	}
+	return validateTLS(cfg.TLS)
+}
+
+func validateGenerationTimestamp(timestamp string) error {
+	return validateObjectNamePart("timestamp", timestamp)
 }
 
 func checkDuplicateNames(configs []VCLConfig) error {
@@ -145,8 +203,14 @@ func resolveTLSPaths(entries []TLSEntry, dir string) []TLSEntry {
 	return out
 }
 
-// ValidateConfigs checks for duplicate names and overlapping hostnames across all configs.
+// ValidateConfigs validates all route configurations and checks for duplicate
+// names or overlapping hostnames across the set.
 func ValidateConfigs(configs []VCLConfig) error {
+	for i, cfg := range configs {
+		if err := validateConfig(cfg); err != nil {
+			return fmt.Errorf("route %d: %w", i, err)
+		}
+	}
 	if err := checkDuplicateNames(configs); err != nil {
 		return err
 	}

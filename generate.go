@@ -85,7 +85,17 @@ type cmdfileData struct {
 }
 
 // BuildRoutingVCL generates the routing VCL content for the given configurations.
+// It validates route names, hostnames, and timestamp because those values are
+// embedded into VCL object names and host match expressions.
 func BuildRoutingVCL(configs []VCLConfig, timestamp string) (string, error) {
+	if err := validateGenerationTimestamp(timestamp); err != nil {
+		return "", err
+	}
+	for i, cfg := range configs {
+		if err := validateRoutingConfig(cfg); err != nil {
+			return "", fmt.Errorf("route %d: %w", i, err)
+		}
+	}
 	var buf bytes.Buffer
 	data := routingVCLDataInternal{
 		Configs:     configs,
@@ -106,8 +116,21 @@ func quoteCLIArg(s string) string {
 	return `"` + s + `"`
 }
 
-// BuildCmdfile generates the cmdfile content for the given configurations.
+// BuildCmdfile generates the cmdfile content for the given configurations. It
+// validates route names, vclPath, TLS entries, and timestamp because those
+// values are embedded into Varnish CLI object names and commands.
 func BuildCmdfile(configs []VCLConfig, routingPath string, timestamp string) (string, error) {
+	if routingPath == "" {
+		return "", fmt.Errorf("routingPath is required")
+	}
+	if err := validateGenerationTimestamp(timestamp); err != nil {
+		return "", err
+	}
+	for i, cfg := range configs {
+		if err := validateCmdfileConfig(cfg); err != nil {
+			return "", fmt.Errorf("route %d: %w", i, err)
+		}
+	}
 	var lines []string
 	for _, cfg := range configs {
 		for i, t := range cfg.TLS {

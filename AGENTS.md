@@ -170,6 +170,12 @@ Parsed by `ParseRoutes`. File existence is checked for `vclPath` and all TLS pat
 
 ---
 
+## Route names and generated object names
+
+Route names are embedded in generated Varnish object names and VCL `return(vcl(...))` targets. They must match `[a-zA-Z][a-zA-Z0-9_-]*`, may contain hyphens and underscores, must start with a letter, and are limited to 64 characters. The name `routing` is reserved.
+
+`BuildRoutingVCL` validates route names, hostnames, and timestamp. `BuildCmdfile` validates route names, `vclPath`, TLS entries, routing path, and timestamp. `ValidateConfigs` validates each full config and then checks duplicate names and overlapping hostnames.
+
 ## Wildcard hostnames
 
 Hostnames may contain `*` only as a whole segment, e.g. `*.example.com` or `foo.*.com`. Partial wildcards like `fo*.com` are rejected.

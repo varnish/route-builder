@@ -141,6 +141,18 @@ route-builder /etc/varnish/services/*.vcl
 
 Use `-yamlfile` to export the parsed frontmatter to a YAML manifest if you want to migrate to the YAML workflow later.
 
+### Route names
+
+Route names become part of generated Varnish VCL, label, and TLS certificate object names. They must match:
+
+```text
+[a-zA-Z][a-zA-Z0-9_-]*
+```
+
+Names may contain hyphens and underscores, must start with a letter, and are limited to 64 characters. The name `routing` is reserved.
+
+The public `BuildRoutingVCL` and `BuildCmdfile` APIs validate generated object-name components before rendering so direct library callers get an error instead of malformed VCL or CLI output.
+
 ### TLS
 
 Each route can carry one or more TLS certificates — either a PEM bundle or a separate cert + key pair:

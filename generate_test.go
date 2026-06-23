@@ -25,7 +25,7 @@ func TestHostnameToVCL(t *testing.T) {
 
 func TestBuildRoutingVCL(t *testing.T) {
 	configs := []VCLConfig{
-		{Name: "foo_service", Hostnames: []string{"foo.com", "www.foo.com"}},
+		{Name: "foo-service", Hostnames: []string{"foo.com", "www.foo.com"}},
 		{Name: "bar_service", Hostnames: []string{"bar.com"}},
 		{Name: "wc_service", Hostnames: []string{"*.wc.com"}},
 	}
@@ -48,7 +48,7 @@ func TestBuildRoutingVCL(t *testing.T) {
 		// non-TLS plain port strip
 		`regsub(req.http.host, ":\d+$", "")`,
 		`req.http.host == "foo.com" || req.http.host == "www.foo.com"`,
-		"return(vcl(rb-label-foo_service-2024-01-15T10-30-45_0));",
+		"return(vcl(rb-label-foo-service-2024-01-15T10-30-45_0));",
 		`req.http.host == "bar.com"`,
 		"return(vcl(rb-label-bar_service-2024-01-15T10-30-45_0));",
 		`req.http.host ~ "^[^.]+\.wc\.com$"`,
@@ -136,23 +136,27 @@ func TestBuildCmdfileTLS(t *testing.T) {
 }
 
 func TestBuildCmdfileNoVclPath(t *testing.T) {
-	// VclPath is mandatory after validation; passing an empty VclPath is a
-	// programmer error. The template no longer guards on it — verify the output
-	// would contain the empty string, confirming the guard was removed (the
-	// defensive panic in reloadVarnish catches this at runtime).
-	configs := []VCLConfig{
-		{Name: "foo_service", VclPath: "/etc/varnish/foo.vcl"},
+	configs := []VCLConfig{{Name: "foo_service"}}
+	_, err := BuildCmdfile(configs, "/etc/vcl/routing.vcl", "2024-01-15T10-30-45_0")
+	if err == nil || !strings.Contains(err.Error(), "vclPath") {
+		t.Fatalf("want vclPath validation error, got %v", err)
 	}
-	const ts = "2024-01-15T10-30-45_0"
-	got, err := BuildCmdfile(configs, "/etc/vcl/routing.vcl", ts)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+}
+
+func TestBuildGenerationValidation(t *testing.T) {
+	_, err := BuildRoutingVCL([]VCLConfig{{Name: "bad/name", Hostnames: []string{"foo.com"}}}, "2024-01-15T10-30-45_0")
+	if err == nil || !strings.Contains(err.Error(), "valid route name") {
+		t.Fatalf("want route name validation error, got %v", err)
 	}
-	if !strings.Contains(got, "vcl.load rb-vcl-foo_service-") {
-		t.Errorf("expected vcl.load line, got:\n%s", got)
+
+	_, err = BuildRoutingVCL([]VCLConfig{{Name: "foo", Hostnames: []string{"foo.com"}}}, "bad timestamp")
+	if err == nil || !strings.Contains(err.Error(), "timestamp") {
+		t.Fatalf("want timestamp validation error, got %v", err)
 	}
-	if !strings.Contains(got, "vcl.load rb-routing-") {
-		t.Errorf("expected routing vcl.load:\n%s", got)
+
+	_, err = BuildCmdfile([]VCLConfig{{Name: "foo", VclPath: "/etc/vcl/foo.vcl", TLS: []TLSEntry{{}}}}, "/etc/vcl/routing.vcl", "2024-01-15T10-30-45_0")
+	if err == nil || !strings.Contains(err.Error(), "must specify pem or key+cert") {
+		t.Fatalf("want TLS validation error, got %v", err)
 	}
 }
 

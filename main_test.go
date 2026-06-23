@@ -128,14 +128,19 @@ func TestUnmarshalConfig(t *testing.T) {
 			wantErr: "missing required field: name",
 		},
 		{
-			name:    "invalid name starts with digit",
-			input:   "name: 1bad\nhostnames:\n  - foo.com",
-			wantErr: "not a valid VCL label name",
+			name:  "valid name has hyphen",
+			input: "name: my-service\nhostnames:\n  - foo.com",
+			want:  VCLConfig{Name: "my-service", Hostnames: []string{"foo.com"}},
 		},
 		{
-			name:    "invalid name has hyphen",
-			input:   "name: my-service\nhostnames:\n  - foo.com",
-			wantErr: "not a valid VCL label name",
+			name:    "invalid name starts with digit",
+			input:   "name: 1bad\nhostnames:\n  - foo.com",
+			wantErr: "not a valid route name",
+		},
+		{
+			name:    "invalid name has slash",
+			input:   "name: my/service\nhostnames:\n  - foo.com",
+			wantErr: "not a valid route name",
 		},
 		{
 			name:    "reserved name routing",
@@ -294,6 +299,25 @@ func TestCheckDuplicateHostnames(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
+}
+
+func TestValidateConfigs(t *testing.T) {
+	valid := []VCLConfig{{Name: "my-service", Hostnames: []string{"foo.com"}}}
+	if err := ValidateConfigs(valid); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	invalid := []VCLConfig{{Name: "bad/name", Hostnames: []string{"foo.com"}}}
+	err := ValidateConfigs(invalid)
+	if err == nil || !strings.Contains(err.Error(), "valid route name") {
+		t.Fatalf("want route name validation error, got %v", err)
+	}
+
+	missingHostnames := []VCLConfig{{Name: "foo"}}
+	err = ValidateConfigs(missingHostnames)
+	if err == nil || !strings.Contains(err.Error(), "missing required field: hostnames") {
+		t.Fatalf("want hostnames validation error, got %v", err)
+	}
 }
 
 func TestValidateHostname(t *testing.T) {
@@ -462,10 +486,10 @@ func TestParseRoutes(t *testing.T) {
 
 	t.Run("invalid route name", func(t *testing.T) {
 		dir := t.TempDir()
-		yaml := "routes:\n  - name: bad-name\n    hostnames:\n      - foo.com\n"
+		yaml := "routes:\n  - name: bad/name\n    hostnames:\n      - foo.com\n"
 		path := writeRoutesYAML(t, dir, "routes.yaml", yaml)
 		_, err := ParseRoutes(path)
-		if err == nil || !strings.Contains(err.Error(), "valid VCL label name") {
+		if err == nil || !strings.Contains(err.Error(), "valid route name") {
 			t.Fatalf("want validation error, got %v", err)
 		}
 	})
