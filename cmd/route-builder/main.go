@@ -132,9 +132,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	timestamp := rb.NewTimestamp()
+	builder := rb.NewBuilder(rb.WithConstantNamer(timestamp))
 
 	if *vclfileOut != "none" {
-		content, err := rb.BuildRoutingVCL(configs, timestamp)
+		content, err := builder.BuildRoutingVCL(configs)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
@@ -158,12 +159,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 				return 1
 			}
 		}
-		content, err := rb.BuildCmdfile(configs, routingPath, timestamp)
+		plan, err := builder.BuildCmdfilePlan(configs, routingPath)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
-		if err := rb.WriteOutput(*cmdfileOut, content, stdout); err != nil {
+		if err := rb.WriteOutput(*cmdfileOut, plan.String(), stdout); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
@@ -188,7 +189,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		defer conn.Close()
-		if err := rb.ReloadVarnish(ctx, conn, configs, timestamp, stderr); err != nil {
+		if err := builder.ReloadVarnish(ctx, conn, configs, stderr); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}

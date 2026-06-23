@@ -16,9 +16,9 @@ The tool reads per-service VCL files with YAML frontmatter, or a YAML routes man
 | `config.go` | Public config types plus validation helpers (`ValidateConfigs`, duplicate hostname/name checks, TLS validation). |
 | `parse.go` | Frontmatter and routes-manifest parsing (`ParseVCL`, `ParseRoutes`, `MarshalRoutes`). |
 | `helpers.go` | Public CLI/library helpers (`ExpandGlobs`, file-extension helpers, `NewTimestamp`, `FindRoute`). |
-| `generate.go` | Public routing VCL rendering and cmdfile wrapper (`BuildRoutingVCL`, `BuildCmdfile`). |
-| `plan.go` | Public cmdfile planning, generated object-name helpers, and cleanup command planning. |
-| `reload.go` | Public 8-stage live reload via Varnish admin protocol (`ReloadVarnish`) plus rollback helper. |
+| `generate.go` | Builder routing VCL rendering (`Builder.BuildRoutingVCL`). |
+| `plan.go` | Builder/namer types, cmdfile planning, and cleanup command planning. |
+| `reload.go` | Builder 8-stage live reload via Varnish admin protocol (`Builder.ReloadVarnish`) plus rollback helper. |
 | `write.go` | Public output helpers (`WriteFileAtomic`, `WriteOutput`). |
 | `cmd/route-builder/main.go` | CLI entry point, flag parsing, input detection, and orchestration. |
 | `*_test.go` | Library tests; `reload_test.go` spins up real Varnish instances via `vtest`. |
@@ -62,7 +62,7 @@ type VCLConfig struct {
 
 - VCL input: both are set to the same absolute VCL file path.
 - YAML input: `SourceFile` is the YAML file; `VclPath` is the route's VCL path, resolved relative to the YAML file when necessary.
-- `ReloadVarnish` defensively errors if `VclPath` is empty after validation.
+- `Builder.ReloadVarnish` defensively errors if `VclPath` is empty after validation.
 
 ---
 
@@ -134,36 +134,36 @@ Parsed by `ParseRoutes`. File existence is checked for `vclPath` and all TLS pat
 
 ### Routing VCL
 
-`BuildRoutingVCL` renders `routingTmpl`:
+`Builder.BuildRoutingVCL` renders `routingTmpl`:
 
 - imports the `tls` VMOD
 - uses SNI (`tls.authority()`) for TLS requests
 - strips ports from non-TLS Host headers, including IPv6 bracket form
-- dispatches with `return(vcl(rb-label-<name>-<timestamp>))`
+- dispatches with `return(vcl(<generated-label-name>))`
 - falls through to `synth(404, "No route matched")`
 
 ### Cmdfile
 
-`BuildCmdfile` is a convenience wrapper around `BuildCmdfilePlan(...).String()`. `BuildCmdfilePlan` creates commands in Varnish-safe dependency order:
+`Builder.BuildCmdfilePlan` creates commands in Varnish-safe dependency order:
 
-1. `tls.cert.load rb-cert-<name>-<idx>-<timestamp> ...` lines
+1. `tls.cert.load rb-cert-<name>-<idx>-<suffix> ...` lines
 2. `tls.cert.commit` when any TLS certs were loaded
 3. per-route `vcl.load rb-vcl-...` and `vcl.label rb-label-... rb-vcl-...`
-4. `vcl.load rb-routing-<timestamp> <routingPath>`
-5. `vcl.use rb-routing-<timestamp>`
+4. `vcl.load rb-routing-<suffix> <routingPath>`
+5. `vcl.use rb-routing-<suffix>`
 
-Pass `CmdfileOptions{ExistingVCLNames: set}` to skip `vcl.load` / `vcl.label` commands whose target VCL objects already exist. The final `vcl.use` is always emitted.
+Pass `WithExistingVCLNames(names...)` to skip `vcl.load` / `vcl.label` commands whose target VCL objects already exist. The final `vcl.use` is always emitted. Use `NewBuilder(WithConstantNamer(suffix))` for timestamp-style names or `NewBuilder(WithMD5Namer())` for content-addressed names. Custom naming uses `WithEntityNamer`.
 
 ---
 
 ## Reload flow
 
-`ReloadVarnish` performs an 8-stage live reload; failures before stage 6 roll back staged changes:
+`Builder.ReloadVarnish` performs an 8-stage live reload; failures before stage 6 roll back staged changes:
 
 | Stage | Action |
 |---|---|
 | 1 | Snapshot existing route-builder VCL names plus existing `rb-cert-*` cert IDs. |
-| 2 | Load each per-route VCL and create its timestamped label. |
+| 2 | Load each per-route VCL and create its generated label. |
 | 3 | Compile and load the routing VCL inline. |
 | 4 | Load TLS certificates with explicit `rb-cert-*` IDs. |
 | 5 | Commit TLS certificates. |
@@ -177,9 +177,9 @@ Pass `CmdfileOptions{ExistingVCLNames: set}` to skip `vcl.load` / `vcl.label` co
 
 Route names are embedded in generated Varnish object names and VCL `return(vcl(...))` targets. They must match `[a-zA-Z][a-zA-Z0-9_-]*`, may contain hyphens and underscores, must start with a letter, and are limited to 64 characters. The name `routing` is reserved.
 
-`BuildRoutingVCL` validates route names, hostnames, and timestamp. `BuildCmdfilePlan` / `BuildCmdfile` validate route names, `vclPath`, TLS entries, routing path, and timestamp. `ValidateConfigs` validates each full config and then checks duplicate names and overlapping hostnames.
+`Builder.BuildRoutingVCL` validates route names and hostnames. `Builder.BuildCmdfilePlan` validates route names, `vclPath`, TLS entries, and routing path. `ValidateConfigs` validates each full config and then checks duplicate names and overlapping hostnames.
 
-Generated object-name helpers live in `plan.go`: `RoutingVCLName`, `RouteVCLName`, `RouteLabelName`, `TLSCertID`, `ManagedVCLNames`, and `IsManagedVCLName`. Cleanup helpers `CleanupVCLNamesFromNames` and `CleanupCommandsFromNames` only target standard route-builder VCL object prefixes and return stale objects in discard-safe order: routing VCLs, labels, then per-route VCLs.
+Generated names are controlled by `EntityNamer`. Built-ins are `ConstantNamer(suffix)` and `MD5Namer()`. `NewBuilder()` defaults to `ConstantNamer(NewTimestamp())`. `Builder.ManagedVCLNames` computes the keep set for cleanup. Cleanup helpers `CleanupVCLNamesFromNames` and `CleanupCommandsFromNames` only target standard route-builder VCL object prefixes and return stale objects in discard-safe order: routing VCLs, labels, then per-route VCLs.
 
 ## Wildcard hostnames
 
@@ -214,7 +214,7 @@ The test cert files in `testdata/test.crt` and `testdata/test.key` are self-sign
 2006-01-02T15-04-05_000000000
 ```
 
-The timestamp is used in all route-builder Varnish object names (`rb-vcl-*`, `rb-label-*`, `rb-routing-*`, `rb-cert-*`). Nanosecond precision avoids collisions on rapid successive runs.
+A timestamp from `NewTimestamp` is commonly passed to `WithConstantNamer(timestamp)` for traditional route-builder names (`rb-vcl-*`, `rb-label-*`, `rb-routing-*`, `rb-cert-*`). Nanosecond precision avoids collisions on rapid successive runs. `WithMD5Namer()` uses content hashes instead.
 
 ---
 
@@ -232,7 +232,7 @@ This project uses `github.com/varnish/varnish-go/adm` v0.1.0:
 
 Genuinely hard-to-reach gaps include:
 
-- `BuildRoutingVCL` / `BuildCmdfile` error paths from precompiled templates
+- `Builder.BuildRoutingVCL` template error paths from precompiled templates
 - `WriteFileAtomic` write/close error paths without OS-level fd injection
 - rollback warning paths that require Varnish admin operations to fail mid-rollback
 - CLI `main()` beyond testing `run()`

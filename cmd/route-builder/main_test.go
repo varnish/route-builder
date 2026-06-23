@@ -574,7 +574,7 @@ func TestRunReload(t *testing.T) {
 	}
 	configs := []rb.VCLConfig{fooCfg}
 
-	routingVCL, err := rb.BuildRoutingVCL(configs, ts)
+	routingVCL, err := rb.NewBuilder(rb.WithConstantNamer(ts)).BuildRoutingVCL(configs)
 	if err != nil {
 		t.Fatal(err)
 	}

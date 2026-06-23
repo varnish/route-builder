@@ -84,9 +84,10 @@ if err := routebuilder.ValidateConfigs(configs); err != nil {
     // handle error
 }
 ts := routebuilder.NewTimestamp()
-routingVCL, err := routebuilder.BuildRoutingVCL(configs, ts)
-cmdfile, err := routebuilder.BuildCmdfile(configs, "/etc/varnish/routing.vcl", ts)
-_, _ = routingVCL, cmdfile
+builder := routebuilder.NewBuilder(routebuilder.WithConstantNamer(ts))
+routingVCL, err := builder.BuildRoutingVCL(configs)
+plan, err := builder.BuildCmdfilePlan(configs, "/etc/varnish/routing.vcl")
+_, _ = routingVCL, plan
 ```
 
 A systemd service unit is provided in [`contrib/systemd/`](contrib/systemd/) for production deployments.
@@ -151,16 +152,15 @@ Route names become part of generated Varnish VCL, label, and TLS certificate obj
 
 Names may contain hyphens and underscores, must start with a letter, and are limited to 64 characters. The name `routing` is reserved.
 
-The public `BuildRoutingVCL` and `BuildCmdfile` APIs validate generated object-name components before rendering so direct library callers get an error instead of malformed VCL or CLI output.
+The builder APIs validate generated object-name components before rendering so direct library callers get an error instead of malformed VCL or CLI output.
 
 ### Cmdfile planning and cleanup
 
 Library callers that manage a live Varnish instance can build a reusable command plan instead of rendering a flat cmdfile directly:
 
 ```go
-plan, err := routebuilder.BuildCmdfilePlan(configs, "/etc/varnish/routing.vcl", ts, routebuilder.CmdfileOptions{
-    ExistingVCLNames: existingNames,
-})
+builder := routebuilder.NewBuilder(routebuilder.WithMD5Namer())
+plan, err := builder.BuildCmdfilePlan(configs, "/etc/varnish/routing.vcl", routebuilder.WithExistingVCLNames(existingNames...))
 if err != nil {
     // handle error
 }
@@ -170,7 +170,9 @@ for _, command := range plan.Commands() {
 }
 ```
 
-`ExistingVCLNames` skips `vcl.load` and `vcl.label` commands whose target objects already exist; `vcl.use` is still emitted. For cleanup, use `ManagedVCLNames` to compute the current keep set and `CleanupCommandsFromNames` to produce dependency-ordered `vcl.discard` commands for stale `rb-*` VCL objects.
+`WithExistingVCLNames` skips `vcl.load` and `vcl.label` commands whose target objects already exist; `vcl.use` is still emitted. Use `WithConstantNamer(suffix)` for constant-suffix names (including timestamp-style names) or `WithMD5Namer()` for content-addressed names. With MD5 naming, route VCL/label names are hashed from each route's `vclPath` content and the routing VCL name is hashed from generated routing VCL content.
+
+For cleanup, use `builder.ManagedVCLNames(configs, routingContent)` to compute the current keep set, then pass it to `CleanupCommandsFromNames` to produce dependency-ordered `vcl.discard` commands for stale `rb-*` VCL objects.
 
 ### TLS
 
@@ -203,7 +205,7 @@ Ports are stripped automatically. TLS requests use the SNI hostname.
 `-reload` applies new configuration to a running Varnish instance without dropping traffic. route-builder performs an 8-stage atomic operation over the admin protocol:
 
 1. Snapshot existing route-builder VCL names and TLS cert IDs
-2. Load each per-route VCL and create its timestamped label
+2. Load each per-route VCL and create its generated label
 3. Compile and load the routing VCL inline
 4. Load new TLS certificates
 5. Commit new TLS certificates

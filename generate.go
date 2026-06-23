@@ -9,8 +9,12 @@ import (
 )
 
 type routingVCLData struct {
-	Configs   []VCLConfig
-	Timestamp string
+	Routes []routingRouteData
+}
+
+type routingRouteData struct {
+	Hostnames []string
+	LabelName string
 }
 
 func hostnameToVCL(h string) string {
@@ -50,39 +54,32 @@ sub vcl_recv {
     } else {
         set req.http.host = regsub(req.http.host, ":\d+$", "");
     }
-{{- range .Configs}}
+{{- range .Routes}}
     if ({{hostCond .Hostnames}}) {
-        return(vcl({{$.PrefixLabel}}{{.Name}}-{{$.Timestamp}}));
+        return(vcl({{.LabelName}}));
     }
 {{- end}}
     return(synth(404, "No route matched"));
 }
 `))
 
-type routingVCLDataInternal struct {
-	Configs     []VCLConfig
-	Timestamp   string
-	PrefixLabel string
-}
-
 // BuildRoutingVCL generates the routing VCL content for the given configurations.
-// It validates route names, hostnames, and timestamp because those values are
-// embedded into VCL object names and host match expressions.
-func BuildRoutingVCL(configs []VCLConfig, timestamp string) (string, error) {
-	if err := validateGenerationTimestamp(timestamp); err != nil {
-		return "", err
-	}
+func (b *Builder) BuildRoutingVCL(configs []VCLConfig) (string, error) {
 	for i, cfg := range configs {
 		if err := validateRoutingConfig(cfg); err != nil {
 			return "", fmt.Errorf("route %d: %w", i, err)
 		}
 	}
-	var buf bytes.Buffer
-	data := routingVCLDataInternal{
-		Configs:     configs,
-		Timestamp:   timestamp,
-		PrefixLabel: PrefixLabel,
+	routeNames, err := b.routeObjectNamesForConfigs(configs)
+	if err != nil {
+		return "", err
 	}
+	routes := make([]routingRouteData, len(configs))
+	for i, cfg := range configs {
+		routes[i] = routingRouteData{Hostnames: cfg.Hostnames, LabelName: routeNames[i].Label}
+	}
+	var buf bytes.Buffer
+	data := routingVCLData{Routes: routes}
 	if err := routingTmpl.Execute(&buf, data); err != nil {
 		return "", err
 	}
@@ -95,11 +92,4 @@ func quoteCLIArg(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `"`, `\"`)
 	return `"` + s + `"`
-}
-
-// BuildCmdfile generates the cmdfile content for the given configurations. It
-// validates route names, vclPath, TLS entries, and timestamp because those
-// values are embedded into Varnish CLI object names and commands.
-func BuildCmdfile(configs []VCLConfig, routingPath string, timestamp string) (string, error) {
-	return BuildCmdfileWithExisting(configs, routingPath, timestamp, nil)
 }

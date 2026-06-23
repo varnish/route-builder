@@ -17,24 +17,24 @@
 //	    log.Fatal(err)
 //	}
 //
-//	// Generate outputs
+//	// Generate outputs with timestamp-compatible names
 //	timestamp := routebuilder.NewTimestamp()
-//	vcl, _ := routebuilder.BuildRoutingVCL(configs, timestamp)
-//	cmdfile, _ := routebuilder.BuildCmdfile(configs, "/etc/varnish/routing.vcl", timestamp)
+//	builder := routebuilder.NewBuilder(routebuilder.WithConstantNamer(timestamp))
+//	vcl, _ := builder.BuildRoutingVCL(configs)
+//	plan, _ := builder.BuildCmdfilePlan(configs, "/etc/varnish/routing.vcl")
 //
-//	// Or build a reusable command plan that can skip already-loaded VCL objects
-//	plan, _ := routebuilder.BuildCmdfilePlan(configs, "/etc/varnish/routing.vcl", timestamp, routebuilder.CmdfileOptions{
-//	    ExistingVCLNames: map[string]bool{},
-//	})
-//	_ = plan.Commands()
+//	// Or build with content-addressed names and skip already-loaded VCL objects
+//	stable := routebuilder.NewBuilder(routebuilder.WithMD5Namer())
+//	stablePlan, _ := stable.BuildCmdfilePlan(configs, "/etc/varnish/routing.vcl", routebuilder.WithExistingVCLNames("rb-vcl-foo-old"))
+//	_ = stablePlan.Commands()
 //
 //	// Write files
 //	routebuilder.WriteFileAtomic("/etc/varnish/routing.vcl", vcl)
-//	routebuilder.WriteFileAtomic("/etc/varnish/cmdfile", cmdfile)
+//	routebuilder.WriteFileAtomic("/etc/varnish/cmdfile", plan.String())
 //
 //	// Or reload a running Varnish instance
 //	conn, _ := adm.Connect(ctx, "")
-//	routebuilder.ReloadVarnish(ctx, conn, configs, timestamp, os.Stderr)
+//	builder.ReloadVarnish(ctx, conn, configs, os.Stderr)
 package routebuilder
 
 // Prefix constants for Varnish object names managed by route-builder.

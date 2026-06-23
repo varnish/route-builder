@@ -34,17 +34,22 @@ func vclRollback(ctx context.Context, conn *adm.Conn, hasStagedTLS bool, routing
 	}
 }
 
-// ReloadVarnish performs an 8-stage live reload of Varnish with the given configurations.
-// It loads new VCLs, creates labels, loads TLS certs, and activates the new routing VCL.
-// On failure before activation (stage 6), it rolls back all changes.
-func ReloadVarnish(ctx context.Context, conn *adm.Conn, configs []VCLConfig, timestamp string, stderr io.Writer) error {
+// ReloadVarnish performs an 8-stage live reload of Varnish with the given
+// configurations. It loads new VCLs, creates labels, loads TLS certs, and
+// activates the new routing VCL. On failure before activation (stage 6), it
+// rolls back all changes.
+func (b *Builder) ReloadVarnish(ctx context.Context, conn *adm.Conn, configs []VCLConfig, stderr io.Writer) error {
 	// Stage 1: snapshot route-builder VCLs, labels, and cert IDs for cleanup.
 	vclList, err := conn.VCLList(ctx)
 	if err != nil {
 		return fmt.Errorf("vcl.list: %w", err)
 	}
 	var snapshot []string
-	for name := range vclList {
+	existingVCLNames := make(map[string]bool, len(vclList))
+	for name, entry := range vclList {
+		if entry.Status != "discarded" {
+			existingVCLNames[name] = true
+		}
 		if IsManagedVCLName(name) {
 			snapshot = append(snapshot, name)
 		}
@@ -61,6 +66,7 @@ func ReloadVarnish(ctx context.Context, conn *adm.Conn, configs []VCLConfig, tim
 		}
 	}
 	var oldCertIDs []string
+	existingCertIDs := map[string]bool{}
 	oldCertEntries, certListErr := conn.TLSCertList(ctx)
 	if certListErr != nil {
 		if hasTLSConfig {
@@ -70,6 +76,7 @@ func ReloadVarnish(ctx context.Context, conn *adm.Conn, configs []VCLConfig, tim
 	} else {
 		seen := make(map[string]bool)
 		for _, e := range oldCertEntries {
+			existingCertIDs[e.ID] = true
 			if strings.HasPrefix(e.ID, PrefixCert) && !seen[e.ID] {
 				oldCertIDs = append(oldCertIDs, e.ID)
 				seen[e.ID] = true
@@ -81,45 +88,66 @@ func ReloadVarnish(ctx context.Context, conn *adm.Conn, configs []VCLConfig, tim
 	var loadedLabels []string
 	var routingVCLName string
 	var hasStagedTLS bool
+	routeNames, err := b.routeObjectNamesForConfigs(configs)
+	if err != nil {
+		return err
+	}
 
-	// Stage 2: load each per-route VCL and create its timestamped label
-	for _, cfg := range configs {
+	// Stage 2: load each per-route VCL and create its label.
+	for i, cfg := range configs {
 		if cfg.VclPath == "" {
 			vclRollback(ctx, conn, hasStagedTLS, routingVCLName, loadedLabels, loadedVCLs, stderr)
 			return fmt.Errorf("route %q: VclPath is empty after validation", cfg.Name)
 		}
-		vclName := RouteVCLName(cfg, timestamp)
-		if err := conn.VCLLoad(ctx, vclName, cfg.VclPath, adm.VCLStateAuto); err != nil {
-			vclRollback(ctx, conn, hasStagedTLS, routingVCLName, loadedLabels, loadedVCLs, stderr)
-			return fmt.Errorf("vcl.load %s: %w", vclName, err)
+		vclName := routeNames[i].VCL
+		if !existingVCLNames[vclName] {
+			if err := conn.VCLLoad(ctx, vclName, cfg.VclPath, adm.VCLStateAuto); err != nil {
+				vclRollback(ctx, conn, hasStagedTLS, routingVCLName, loadedLabels, loadedVCLs, stderr)
+				return fmt.Errorf("vcl.load %s: %w", vclName, err)
+			}
+			loadedVCLs = append(loadedVCLs, vclName)
 		}
-		loadedVCLs = append(loadedVCLs, vclName)
-		labelName := RouteLabelName(cfg, timestamp)
-		if err := conn.VCLLabel(ctx, labelName, vclName); err != nil {
-			vclRollback(ctx, conn, hasStagedTLS, routingVCLName, loadedLabels, loadedVCLs, stderr)
-			return fmt.Errorf("vcl.label %s: %w", labelName, err)
+		labelName := routeNames[i].Label
+		if !existingVCLNames[labelName] {
+			if err := conn.VCLLabel(ctx, labelName, vclName); err != nil {
+				vclRollback(ctx, conn, hasStagedTLS, routingVCLName, loadedLabels, loadedVCLs, stderr)
+				return fmt.Errorf("vcl.label %s: %w", labelName, err)
+			}
+			loadedLabels = append(loadedLabels, labelName)
 		}
-		loadedLabels = append(loadedLabels, labelName)
 	}
 
-	// Stage 3: compile and load routing VCL inline with matching timestamp
-	routingVCLName = RoutingVCLName(timestamp)
-	routingContent, err := BuildRoutingVCL(configs, timestamp)
+	// Stage 3: compile and load routing VCL inline.
+	routingContent, err := b.BuildRoutingVCL(configs)
 	if err != nil {
 		vclRollback(ctx, conn, hasStagedTLS, "", loadedLabels, loadedVCLs, stderr)
 		return fmt.Errorf("build routing VCL: %w", err)
 	}
-	if err := conn.VCLInline(ctx, routingVCLName, routingContent, adm.VCLStateAuto); err != nil {
-		vclRollback(ctx, conn, hasStagedTLS, routingVCLName, loadedLabels, loadedVCLs, stderr)
-		return fmt.Errorf("vcl.inline routing: %w", err)
+	routingVCLName, err = b.routingVCLName([]byte(routingContent))
+	if err != nil {
+		vclRollback(ctx, conn, hasStagedTLS, "", loadedLabels, loadedVCLs, stderr)
+		return fmt.Errorf("name routing VCL: %w", err)
+	}
+	if !existingVCLNames[routingVCLName] {
+		if err := conn.VCLInline(ctx, routingVCLName, routingContent, adm.VCLStateAuto); err != nil {
+			vclRollback(ctx, conn, hasStagedTLS, routingVCLName, loadedLabels, loadedVCLs, stderr)
+			return fmt.Errorf("vcl.inline routing: %w", err)
+		}
 	}
 
-	// Stage 4: load TLS certs with stable rb-cert-<name>-<idx>-<ts> IDs.
-	// Using an explicit ID means stage 8 can target exactly these certs by
-	// prefix, and reloading the same cert file never collides with the new ID.
+	// Stage 4: load TLS certs.
+	currentCertIDs := map[string]bool{}
 	for _, cfg := range configs {
 		for i, t := range cfg.TLS {
-			certID := TLSCertID(cfg, i, timestamp)
+			certID, err := b.tlsCertID(cfg, i, t)
+			if err != nil {
+				vclRollback(ctx, conn, hasStagedTLS, routingVCLName, loadedLabels, loadedVCLs, stderr)
+				return fmt.Errorf("route %q tls entry %d: %w", cfg.Name, i, err)
+			}
+			currentCertIDs[certID] = true
+			if existingCertIDs[certID] {
+				continue
+			}
 			var opts []adm.TLSOption
 			opts = append(opts, adm.TLSWithCertID(certID))
 			if t.Key != "" {
@@ -137,7 +165,7 @@ func ReloadVarnish(ctx context.Context, conn *adm.Conn, configs []VCLConfig, tim
 		}
 	}
 
-	// Stage 5: commit TLS certs
+	// Stage 5: commit TLS certs.
 	if hasStagedTLS {
 		if err := conn.TLSCertCommit(ctx); err != nil {
 			vclRollback(ctx, conn, hasStagedTLS, routingVCLName, loadedLabels, loadedVCLs, stderr)
@@ -161,15 +189,26 @@ func ReloadVarnish(ctx context.Context, conn *adm.Conn, configs []VCLConfig, tim
 			fmt.Fprintf(stderr, "warning: cleanup %s: %v\n", name, err)
 		}
 	}
-	for _, name := range CleanupVCLNamesFromNames(snapshot, ManagedVCLNames(configs, timestamp)) {
+	keep, err := b.ManagedVCLNames(configs, []byte(routingContent))
+	if err != nil {
+		fmt.Fprintf(stderr, "warning: build cleanup keep set: %v\n", err)
+		keep = map[string]bool{routingVCLName: true}
+		for _, name := range routeNames {
+			keep[name.VCL] = true
+			keep[name.Label] = true
+		}
+	}
+	for _, name := range CleanupVCLNamesFromNames(snapshot, keep) {
 		warnDiscard(name, conn.VCLDiscard(ctx, name))
 	}
 
 	// Stage 8: discard previous rb-cert-* entries now that the new certs are active.
-	// Because we assigned explicit IDs in stage 4, the old IDs are distinct from
-	// the new ones even when the same cert file is reloaded.
+	// Current cert IDs are kept so content-addressed cert IDs can be reused safely.
 	var discarded bool
 	for _, id := range oldCertIDs {
+		if currentCertIDs[id] {
+			continue
+		}
 		if err := conn.TLSCertDiscard(ctx, id); err != nil {
 			fmt.Fprintf(stderr, "warning: cleanup cert %s: %v\n", id, err)
 		} else {

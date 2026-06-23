@@ -134,7 +134,7 @@ func TestRoutingTwoServices(t *testing.T) {
 	}
 	configs := []VCLConfig{fooCfg, barCfg}
 
-	routingVCL, err := BuildRoutingVCL(configs, ts)
+	routingVCL, err := NewBuilder(WithConstantNamer(ts)).BuildRoutingVCL(configs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestRoutingWildcard(t *testing.T) {
 	}
 	configs := []VCLConfig{wcCfg}
 
-	routingVCL, err := BuildRoutingVCL(configs, ts)
+	routingVCL, err := NewBuilder(WithConstantNamer(ts)).BuildRoutingVCL(configs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +223,7 @@ func TestRoutingNoMatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	routingVCL, err := BuildRoutingVCL([]VCLConfig{fooCfg}, ts)
+	routingVCL, err := NewBuilder(WithConstantNamer(ts)).BuildRoutingVCL([]VCLConfig{fooCfg})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +254,7 @@ func TestRoutingMultipleHostnames(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	routingVCL, err := BuildRoutingVCL([]VCLConfig{svcCfg}, ts)
+	routingVCL, err := NewBuilder(WithConstantNamer(ts)).BuildRoutingVCL([]VCLConfig{svcCfg})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,7 +293,7 @@ func TestReloadCertCleanup(t *testing.T) {
 
 	// First reload: establishes rb-cert-* state.
 	ts1 := NewTimestamp()
-	if err := ReloadVarnish(context.Background(), admConnect(t, v), configs, ts1, os.Stderr); err != nil {
+	if err := NewBuilder(WithConstantNamer(ts1)).ReloadVarnish(context.Background(), admConnect(t, v), configs, os.Stderr); err != nil {
 		t.Fatalf("first ReloadVarnish: %v", err)
 	}
 
@@ -314,7 +314,7 @@ func TestReloadCertCleanup(t *testing.T) {
 
 	// Second reload with the same config: should load new rb-cert-* IDs and discard the first ones.
 	ts2 := NewTimestamp()
-	if err := ReloadVarnish(context.Background(), admConnect(t, v), configs, ts2, os.Stderr); err != nil {
+	if err := NewBuilder(WithConstantNamer(ts2)).ReloadVarnish(context.Background(), admConnect(t, v), configs, os.Stderr); err != nil {
 		t.Fatalf("second ReloadVarnish: %v", err)
 	}
 
@@ -367,7 +367,7 @@ func TestRoutingViaSNI(t *testing.T) {
 	}
 	configs := []VCLConfig{fooCfg, barCfg}
 
-	routingVCL, err := BuildRoutingVCL(configs, ts)
+	routingVCL, err := NewBuilder(WithConstantNamer(ts)).BuildRoutingVCL(configs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -423,7 +423,7 @@ func TestReload(t *testing.T) {
 	}
 	initialConfigs := []VCLConfig{fooCfg, barCfg}
 
-	routingVCL1, err := BuildRoutingVCL(initialConfigs, ts1)
+	routingVCL1, err := NewBuilder(WithConstantNamer(ts1)).BuildRoutingVCL(initialConfigs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -455,7 +455,7 @@ func TestReload(t *testing.T) {
 	newConfigs := []VCLConfig{fooCfg, bazCfg}
 
 	ts2 := NewTimestamp()
-	if err := ReloadVarnish(context.Background(), admConnect(t, v), newConfigs, ts2, os.Stderr); err != nil {
+	if err := NewBuilder(WithConstantNamer(ts2)).ReloadVarnish(context.Background(), admConnect(t, v), newConfigs, os.Stderr); err != nil {
 		t.Fatalf("ReloadVarnish: %v", err)
 	}
 
@@ -526,7 +526,7 @@ func TestReloadRollbackWithTLS(t *testing.T) {
 	}}
 
 	ts := NewTimestamp()
-	err = ReloadVarnish(context.Background(), admConnect(t, v), failConfigs, ts, os.Stderr)
+	err = NewBuilder(WithConstantNamer(ts)).ReloadVarnish(context.Background(), admConnect(t, v), failConfigs, os.Stderr)
 	if err == nil {
 		t.Fatal("expected reload to fail on bad TLS cert")
 	}
@@ -568,7 +568,7 @@ func TestReloadRollback(t *testing.T) {
 	}
 	configs := []VCLConfig{fooCfg}
 
-	routingVCL, err := BuildRoutingVCL(configs, ts)
+	routingVCL, err := NewBuilder(WithConstantNamer(ts)).BuildRoutingVCL(configs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -599,7 +599,7 @@ func TestReloadRollback(t *testing.T) {
 		Hostnames: []string{"bad.com"},
 	})
 	ts2 := NewTimestamp()
-	err = ReloadVarnish(context.Background(), admConnect(t, v), failConfigs, ts2, os.Stderr)
+	err = NewBuilder(WithConstantNamer(ts2)).ReloadVarnish(context.Background(), admConnect(t, v), failConfigs, os.Stderr)
 	if err == nil {
 		t.Fatal("expected reload to fail, but it succeeded")
 	}
