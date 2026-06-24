@@ -32,14 +32,16 @@ func hostnameToVCL(h string) string {
 	return fmt.Sprintf(`req.http.host ~ "^%s$"`, strings.Join(segs, `\.`))
 }
 
+func hostCondition(hosts []string) string {
+	parts := make([]string, len(hosts))
+	for i, h := range hosts {
+		parts[i] = hostnameToVCL(h)
+	}
+	return strings.Join(parts, " || ")
+}
+
 var routingTmpl = template.Must(template.New("routing").Funcs(template.FuncMap{
-	"hostCond": func(hosts []string) string {
-		parts := make([]string, len(hosts))
-		for i, h := range hosts {
-			parts[i] = hostnameToVCL(h)
-		}
-		return strings.Join(parts, " || ")
-	},
+	"hostCond": hostCondition,
 }).Parse(`vcl 4.1;
 
 import tls;
@@ -70,20 +72,36 @@ func (b *Builder) BuildRoutingVCL(configs []VCLConfig) (string, error) {
 			return "", fmt.Errorf("route %d: %w", i, err)
 		}
 	}
-	routeNames, err := b.routeObjectNamesForConfigs(configs)
+	targets, err := b.vclProgramTargets(configs)
 	if err != nil {
 		return "", err
 	}
-	routes := make([]routingRouteData, len(configs))
-	for i, cfg := range configs {
-		routes[i] = routingRouteData{Hostnames: cfg.Hostnames, LabelName: routeNames[i].Label}
+	resolved, err := b.ResolveVCLTargets(targets)
+	if err != nil {
+		return "", err
 	}
+	entryVCL, err := b.entryRenderer(resolved)
+	return string(entryVCL), err
+}
+
+func defaultEntryRenderer(targets []ResolvedVCLTarget) ([]byte, error) {
+	routes := make([]routingRouteData, len(targets))
+	for i, target := range targets {
+		if len(target.Hostnames) == 0 {
+			return nil, fmt.Errorf("target %q: hostnames are required for default entry renderer", target.VCLPath)
+		}
+		routes[i] = routingRouteData{Hostnames: target.Hostnames, LabelName: target.LabelName}
+	}
+	return renderRoutingVCL(routes)
+}
+
+func renderRoutingVCL(routes []routingRouteData) ([]byte, error) {
 	var buf bytes.Buffer
 	data := routingVCLData{Routes: routes}
 	if err := routingTmpl.Execute(&buf, data); err != nil {
-		return "", err
+		return nil, err
 	}
-	return buf.String(), nil
+	return buf.Bytes(), nil
 }
 
 // quoteCLIArg wraps a Varnish CLI argument in double quotes, escaping backslash

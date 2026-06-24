@@ -209,12 +209,12 @@ func TestBuildCmdfilePlanMD5NamesWithExisting(t *testing.T) {
 		t.Fatal(err)
 	}
 	routeSuffix := contentHash(data)
-	existing := map[string]bool{
-		"rb-vcl-foo_service-" + routeSuffix:   true,
-		"rb-label-foo_service-" + routeSuffix: true,
+	existing := []string{
+		"rb-vcl-foo_service-" + routeSuffix,
+		"rb-label-foo_service-" + routeSuffix,
 	}
 
-	plan, err := builder.BuildCmdfilePlan([]VCLConfig{cfg}, routingPath, WithExistingVCLNames(mapKeys(existing)...))
+	plan, err := builder.BuildCmdfilePlan([]VCLConfig{cfg}, routingPath, WithExistingVCLNames(existing...))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -227,12 +227,124 @@ func TestBuildCmdfilePlanMD5NamesWithExisting(t *testing.T) {
 	}
 }
 
-func mapKeys(m map[string]bool) []string {
-	keys := make([]string, 0, len(m))
-	for key := range m {
-		keys = append(keys, key)
+func TestBuildVCLProgram(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := writeRoutesYAML(t, dir, "target.vcl", "vcl 4.1;\n")
+	entryPath := writeRoutesYAML(t, dir, "entry.vcl", "")
+	targetContent, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return keys
+	builder := NewBuilder(
+		WithMD5Namer(),
+		WithEntryNameSpec(EntityNameSpec{Prefix: "entry__"}),
+		WithEntryRenderer(func(targets []ResolvedVCLTarget) ([]byte, error) {
+			if len(targets) != 1 {
+				return nil, fmt.Errorf("want one target, got %d", len(targets))
+			}
+			return []byte("return(vcl(" + targets[0].LabelName + "));\n"), nil
+		}),
+	)
+
+	result, err := builder.BuildVCLProgram([]VCLTargetSpec{{
+		VCLName:   EntityNameSpec{Prefix: "target__", Suffix: "-vcl"},
+		VCLPath:   targetPath,
+		LabelName: &EntityNameSpec{Prefix: "target__", Suffix: "-label"},
+	}}, entryPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	plan := result.CmdfilePlan.String()
+	targetSuffix := contentHash(targetContent)
+	entrySuffix := contentHash([]byte(result.EntryVCL))
+	for _, want := range []string{
+		"target__" + targetSuffix + "-vcl",
+		"target__" + targetSuffix + "-label",
+		"entry__" + entrySuffix,
+	} {
+		if !result.ManagedVCLNames[want] {
+			t.Fatalf("missing managed name %q in %#v", want, result.ManagedVCLNames)
+		}
+	}
+	for _, want := range []string{
+		`vcl.load target__` + targetSuffix + `-vcl "` + targetPath + `"`,
+		`vcl.label target__` + targetSuffix + `-label target__` + targetSuffix + `-vcl`,
+		`vcl.load entry__` + entrySuffix + ` "` + entryPath + `"`,
+		`vcl.use entry__` + entrySuffix,
+	} {
+		if !strings.Contains(plan, want) {
+			t.Fatalf("want %q in plan:\n%s", want, plan)
+		}
+	}
+}
+
+func TestBuildVCLProgramPlanMD5DefaultsContentFromPaths(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := writeRoutesYAML(t, dir, "target.vcl", "vcl 4.1;\n")
+	entryPath := writeRoutesYAML(t, dir, "entry.vcl", "entry content")
+	targetContent, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entryContent, err := os.ReadFile(entryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetSuffix := contentHash(targetContent)
+	entrySuffix := contentHash(entryContent)
+	label := EntityNameSpec{Prefix: "target__", Suffix: "-label"}
+	plan, err := NewBuilder(WithMD5Namer()).BuildVCLProgramPlan(VCLProgramSpec{
+		Targets: []VCLTargetSpec{{
+			VCLName:   EntityNameSpec{Prefix: "target__", Suffix: "-vcl"},
+			VCLPath:   targetPath,
+			LabelName: &label,
+		}},
+		Entry: EntryVCLSpec{
+			Name:    EntityNameSpec{Prefix: "entry__"},
+			VCLPath: entryPath,
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, want := range []string{
+		`vcl.load target__` + targetSuffix + `-vcl "` + targetPath + `"`,
+		`vcl.label target__` + targetSuffix + `-label target__` + targetSuffix + `-vcl`,
+		`vcl.load entry__` + entrySuffix + ` "` + entryPath + `"`,
+		`vcl.use entry__` + entrySuffix,
+	} {
+		if !strings.Contains(plan.String(), want) {
+			t.Fatalf("want %q in plan:\n%s", want, plan.String())
+		}
+	}
+}
+
+func TestBuildVCLProgramPlanWithExisting(t *testing.T) {
+	builder := NewBuilder(WithConstantNamer("ts"))
+	label := EntityNameSpec{Prefix: "target-", Suffix: "-label"}
+	plan, err := builder.BuildVCLProgramPlan(VCLProgramSpec{
+		Targets: []VCLTargetSpec{{
+			VCLName:   EntityNameSpec{Prefix: "target-", Suffix: "-vcl"},
+			VCLPath:   "/etc/vcl/target.vcl",
+			LabelName: &label,
+		}},
+		Entry: EntryVCLSpec{
+			Name:    EntityNameSpec{Prefix: "entry-"},
+			VCLPath: "/etc/vcl/entry.vcl",
+		},
+	}, WithExistingVCLNames("target-ts-vcl", "target-ts-label", "entry-ts"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := plan.String()
+	for _, notWant := range []string{"vcl.load target-ts-vcl", "vcl.label target-ts-label", "vcl.load entry-ts"} {
+		if strings.Contains(got, notWant) {
+			t.Fatalf("existing program object %q should be skipped:\n%s", notWant, got)
+		}
+	}
+	if got != "vcl.use entry-ts\n" {
+		t.Fatalf("want only vcl.use, got:\n%s", got)
+	}
 }
 
 func TestBuildCmdfilePlanWithExisting(t *testing.T) {
@@ -241,13 +353,13 @@ func TestBuildCmdfilePlanWithExisting(t *testing.T) {
 		{Name: "bar_service", Hostnames: []string{"bar.com"}, VclPath: "/etc/vcl/bar.vcl"},
 	}
 	const ts = "2024-01-15T10-30-45_0"
-	existing := map[string]bool{
-		"rb-vcl-foo_service-" + ts:   true,
-		"rb-label-foo_service-" + ts: true,
-		"rb-routing-" + ts:           true,
+	existing := []string{
+		"rb-vcl-foo_service-" + ts,
+		"rb-label-foo_service-" + ts,
+		"rb-routing-" + ts,
 	}
 
-	plan, err := NewBuilder(WithConstantNamer(ts)).BuildCmdfilePlan(configs, "/etc/vcl/routing.vcl", WithExistingVCLNames(mapKeys(existing)...))
+	plan, err := NewBuilder(WithConstantNamer(ts)).BuildCmdfilePlan(configs, "/etc/vcl/routing.vcl", WithExistingVCLNames(existing...))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
