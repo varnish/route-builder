@@ -68,8 +68,18 @@ Or build from source:
 ```bash
 git clone https://github.com/varnish/route-builder
 cd route-builder
-go build -o route-builder .
+go build -o route-builder ./cmd/route-builder
 ```
+
+## Library
+
+The core logic is importable as a Go library:
+
+```go
+import rb "github.com/varnish/route-builder"
+```
+
+The binary lives at `cmd/route-builder` and is a thin wrapper around `rb.Run()`.
 
 A systemd service unit is provided in [`contrib/systemd/`](contrib/systemd/) for production deployments.
 

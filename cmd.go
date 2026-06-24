@@ -1,4 +1,4 @@
-package main
+package routebuilder
 
 import (
 	"context"
@@ -13,10 +13,10 @@ import (
 	"github.com/varnish/varnish-go/adm"
 )
 
-// Version is set at build time via -ldflags "-X main.Version=x.y.z".
+// Version is set at build time via -ldflags "-X github.com/varnish/route-builder.Version=x.y.z".
 var Version = "dev"
 
-func run(args []string, stdout, stderr io.Writer) int {
+func Run(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("route-builder", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	showVersion := fs.Bool("version", false, "print version and exit")
@@ -62,7 +62,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		var err error
-		configs, err = parseRoutes(files[0])
+		configs, err = ParseRoutes(files[0])
 		if err != nil {
 			fmt.Fprintf(stderr, "%s: %v\n", files[0], err)
 			return 1
@@ -70,7 +70,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	case allVCLFiles(files):
 		for _, f := range files {
-			cfg, err := parseVCL(f)
+			cfg, err := ParseVCL(f)
 			if err != nil {
 				fmt.Fprintf(stderr, "%s: %v\n", f, err)
 				return 1
@@ -83,11 +83,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	if err := checkDuplicateNames(configs); err != nil {
+	if err := CheckDuplicateNames(configs); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	if err := checkDuplicateHostnames(configs); err != nil {
+	if err := CheckDuplicateHostnames(configs); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
@@ -103,7 +103,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "no hostname in URL %q\n", *testRouteURL)
 			return 1
 		}
-		cfg := findRoute(host, configs)
+		cfg := FindRoute(host, configs)
 		if cfg == nil {
 			fmt.Fprintf(stdout, "host %q: no route matched\n", host)
 			return 1
@@ -201,11 +201,11 @@ func newTimestamp() string {
 	return now.Format("2006-01-02T15-04-05") + fmt.Sprintf("_%09d", now.Nanosecond())
 }
 
-func findRoute(host string, configs []VCLConfig) *VCLConfig {
+func FindRoute(host string, configs []VCLConfig) *VCLConfig {
 	host = strings.ToLower(host)
 	for i := range configs {
 		for _, h := range configs[i].Hostnames {
-			if hostnamesOverlap(host, h) {
+			if HostnamesOverlap(host, h) {
 				return &configs[i]
 			}
 		}

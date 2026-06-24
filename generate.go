@@ -1,4 +1,4 @@
-package main
+package routebuilder
 
 import (
 	"bytes"
@@ -122,7 +122,7 @@ func buildCmdfile(configs []VCLConfig, routingPath string, timestamp string) (st
 	return buf.String(), nil
 }
 
-func writeFileAtomic(path, content string) error {
+func WriteFileAtomic(path, content string) error {
 	dir := filepath.Dir(path)
 	f, err := os.CreateTemp(dir, ".route-builder-*")
 	if err != nil {
@@ -160,5 +160,5 @@ func writeOutput(path, content string, stdout io.Writer) error {
 		_, err := fmt.Fprint(stdout, content)
 		return err
 	}
-	return writeFileAtomic(path, content)
+	return WriteFileAtomic(path, content)
 }

@@ -1,4 +1,4 @@
-package main
+package routebuilder
 
 import (
 	"fmt"
@@ -70,7 +70,7 @@ type VCLConfig struct {
 	SourceFile string     `yaml:"-"`
 }
 
-func extractFrontMatter(content string) (string, error) {
+func ExtractFrontMatter(content string) (string, error) {
 	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
 	if lines[0] != "/* routing" {
 		return "", fmt.Errorf("first line must be exactly `/* routing`")
@@ -85,7 +85,7 @@ func extractFrontMatter(content string) (string, error) {
 	return "", fmt.Errorf("routing block not closed with `*/`")
 }
 
-func validateHostname(h string) error {
+func ValidateHostname(h string) error {
 	for _, seg := range strings.Split(h, ".") {
 		if seg == "" {
 			return fmt.Errorf("hostname %q: empty segment", h)
@@ -97,7 +97,7 @@ func validateHostname(h string) error {
 	return nil
 }
 
-func hostnamesOverlap(a, b string) bool {
+func HostnamesOverlap(a, b string) bool {
 	segsA := strings.Split(a, ".")
 	segsB := strings.Split(b, ".")
 	if len(segsA) != len(segsB) {
@@ -136,7 +136,7 @@ func validateConfig(cfg VCLConfig) error {
 		return fmt.Errorf("missing required field: hostnames")
 	}
 	for _, h := range cfg.Hostnames {
-		if err := validateHostname(h); err != nil {
+		if err := ValidateHostname(h); err != nil {
 			return err
 		}
 	}
@@ -156,7 +156,7 @@ func validateConfig(cfg VCLConfig) error {
 	return nil
 }
 
-func unmarshalConfig(raw string) (VCLConfig, error) {
+func UnmarshalConfig(raw string) (VCLConfig, error) {
 	var cfg VCLConfig
 	if err := yaml.Unmarshal([]byte(raw), &cfg); err != nil {
 		return VCLConfig{}, fmt.Errorf("invalid YAML front matter: %w", err)
@@ -167,7 +167,7 @@ func unmarshalConfig(raw string) (VCLConfig, error) {
 	return cfg, nil
 }
 
-func checkDuplicateNames(configs []VCLConfig) error {
+func CheckDuplicateNames(configs []VCLConfig) error {
 	seen := map[string]string{}
 	for _, cfg := range configs {
 		if prev, ok := seen[cfg.Name]; ok {
@@ -178,7 +178,7 @@ func checkDuplicateNames(configs []VCLConfig) error {
 	return nil
 }
 
-func checkDuplicateHostnames(configs []VCLConfig) error {
+func CheckDuplicateHostnames(configs []VCLConfig) error {
 	type entry struct{ hostname, label string }
 	var all []entry
 	for _, cfg := range configs {
@@ -189,7 +189,7 @@ func checkDuplicateHostnames(configs []VCLConfig) error {
 	}
 	for i := 0; i < len(all); i++ {
 		for j := i + 1; j < len(all); j++ {
-			if hostnamesOverlap(all[i].hostname, all[j].hostname) {
+			if HostnamesOverlap(all[i].hostname, all[j].hostname) {
 				return fmt.Errorf("hostname %q overlaps with %q: used in %s and %s",
 					all[i].hostname, all[j].hostname, all[i].label, all[j].label)
 			}
@@ -215,16 +215,16 @@ func resolveTLSPaths(entries []TLSEntry, dir string) []TLSEntry {
 	return out
 }
 
-func parseVCL(path string) (VCLConfig, error) {
+func ParseVCL(path string) (VCLConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return VCLConfig{}, err
 	}
-	raw, err := extractFrontMatter(string(data))
+	raw, err := ExtractFrontMatter(string(data))
 	if err != nil {
 		return VCLConfig{}, err
 	}
-	cfg, err := unmarshalConfig(raw)
+	cfg, err := UnmarshalConfig(raw)
 	if err != nil {
 		return VCLConfig{}, err
 	}
@@ -243,7 +243,7 @@ type routesFile struct {
 	Routes []VCLConfig `yaml:"routes"`
 }
 
-func parseRoutes(path string) ([]VCLConfig, error) {
+func ParseRoutes(path string) ([]VCLConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
