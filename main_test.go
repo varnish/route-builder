@@ -38,20 +38,6 @@ func writeRoutesYAML(t *testing.T, dir, filename, content string) string {
 	return path
 }
 
-// routesYAMLFor writes a routes YAML file that references the given VCL path.
-func routesYAMLFor(t *testing.T, dir, name string, hostnames []string, vclPath string) string {
-	t.Helper()
-	content := fmt.Sprintf("routes:\n  - name: %s\n    hostnames:", name)
-	for _, h := range hostnames {
-		content += fmt.Sprintf("\n      - %q", h)
-	}
-	if vclPath != "" {
-		content += fmt.Sprintf("\n    vclPath: %q", vclPath)
-	}
-	content += "\n"
-	return writeRoutesYAML(t, dir, name+"-routes.yaml", content)
-}
-
 func TestExtractFrontMatter(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -408,7 +394,9 @@ func TestFindRoute(t *testing.T) {
 func TestParseRoutes(t *testing.T) {
 	t.Run("valid with vcl path", func(t *testing.T) {
 		dir := t.TempDir()
-		os.WriteFile(filepath.Join(dir, "foo.vcl"), []byte("vcl 4.1;"), 0644)
+		if err := os.WriteFile(filepath.Join(dir, "foo.vcl"), []byte("vcl 4.1;"), 0644); err != nil {
+			t.Fatal(err)
+		}
 		yaml := "routes:\n  - name: foo\n    hostnames:\n      - foo.com\n    vclPath: foo.vcl\n"
 		path := writeRoutesYAML(t, dir, "routes.yaml", yaml)
 		configs, err := ParseRoutes(path)
@@ -446,8 +434,12 @@ func TestParseRoutes(t *testing.T) {
 	t.Run("absolute vcl path preserved", func(t *testing.T) {
 		dir := t.TempDir()
 		absVCL := filepath.Join(dir, "sub", "foo.vcl")
-		os.MkdirAll(filepath.Dir(absVCL), 0755)
-		os.WriteFile(absVCL, []byte("vcl 4.1;"), 0644)
+		if err := os.MkdirAll(filepath.Dir(absVCL), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(absVCL, []byte("vcl 4.1;"), 0644); err != nil {
+			t.Fatal(err)
+		}
 		yaml := fmt.Sprintf("routes:\n  - name: foo\n    hostnames:\n      - foo.com\n    vclPath: %q\n", absVCL)
 		path := writeRoutesYAML(t, dir, "routes.yaml", yaml)
 		configs, err := ParseRoutes(path)
@@ -461,7 +453,9 @@ func TestParseRoutes(t *testing.T) {
 
 	t.Run("tls paths resolved relative to yaml", func(t *testing.T) {
 		dir := t.TempDir()
-		os.WriteFile(filepath.Join(dir, "cert.pem"), []byte(""), 0644)
+		if err := os.WriteFile(filepath.Join(dir, "cert.pem"), []byte(""), 0644); err != nil {
+			t.Fatal(err)
+		}
 		vclFile := writeTempVCL(t, dir, "foo_service", []string{"foo.com"})
 		yaml := fmt.Sprintf("routes:\n  - name: foo\n    hostnames:\n      - foo.com\n    vclPath: %q\n    tls:\n      - pem: cert.pem\n", vclFile)
 		path := writeRoutesYAML(t, dir, "routes.yaml", yaml)
@@ -508,7 +502,9 @@ func TestParseVCLErrors(t *testing.T) {
 	t.Run("no frontmatter", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "no_fm.vcl")
-		os.WriteFile(path, []byte("vcl 4.1;\n"), 0644)
+		if err := os.WriteFile(path, []byte("vcl 4.1;\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
 		_, err := ParseVCL(path)
 		if err == nil || !strings.Contains(err.Error(), "/* routing") {
 			t.Fatalf("want frontmatter error, got %v", err)
@@ -518,7 +514,9 @@ func TestParseVCLErrors(t *testing.T) {
 	t.Run("invalid yaml in frontmatter", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "bad.vcl")
-		os.WriteFile(path, []byte("/* routing\nname: [unclosed\n*/\nvcl 4.1;\n"), 0644)
+		if err := os.WriteFile(path, []byte("/* routing\nname: [unclosed\n*/\nvcl 4.1;\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
 		_, err := ParseVCL(path)
 		if err == nil || !strings.Contains(err.Error(), "invalid YAML") {
 			t.Fatalf("want YAML error, got %v", err)
@@ -530,7 +528,9 @@ func TestParseVCLRelativeTLSPaths(t *testing.T) {
 	dir := t.TempDir()
 	content := "/* routing\nname: foo\nhostnames:\n  - foo.com\ntls:\n  - cert: cert.pem\n    key: key.pem\n*/\nvcl 4.1;\n"
 	path := filepath.Join(dir, "foo.vcl")
-	os.WriteFile(path, []byte(content), 0644)
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
 	cfg, err := ParseVCL(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

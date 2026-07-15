@@ -155,7 +155,9 @@ func TestRoutingTwoServices(t *testing.T) {
 	}
 	for _, tc := range cases {
 		resp := doGet(t, v, tc.host)
-		resp.Body.Close()
+		if err := resp.Body.Close(); err != nil {
+			t.Fatal(err)
+		}
 		if resp.Status != "200 "+tc.wantSvc {
 			t.Errorf("host %s: want %q, got %q", tc.host, "200 "+tc.wantSvc, resp.Status)
 		}
@@ -195,7 +197,9 @@ func TestRoutingWildcard(t *testing.T) {
 	}
 	for _, tc := range cases {
 		resp := doGet(t, v, tc.host)
-		resp.Body.Close()
+		if err := resp.Body.Close(); err != nil {
+			t.Fatal(err)
+		}
 		if resp.Status != tc.wantStatus {
 			t.Errorf("host %s: want %q, got %q", tc.host, tc.wantStatus, resp.Status)
 		}
@@ -204,7 +208,9 @@ func TestRoutingWildcard(t *testing.T) {
 	noMatch := []string{"foo.com", "bar.com"}
 	for _, host := range noMatch {
 		resp := doGet(t, v, host)
-		resp.Body.Close()
+		if err := resp.Body.Close(); err != nil {
+			t.Fatal(err)
+		}
 		if resp.StatusCode != 404 {
 			t.Errorf("host %s: want 404, got %d", host, resp.StatusCode)
 		}
@@ -235,7 +241,9 @@ func TestRoutingNoMatch(t *testing.T) {
 	activateRoutingVCL(t, v, dir, routingVCL, ts)
 
 	resp := doGet(t, v, "unknown.com")
-	resp.Body.Close()
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if resp.StatusCode != 404 {
 		t.Errorf("unknown host: want 404, got %d", resp.StatusCode)
 	}
@@ -267,7 +275,9 @@ func TestRoutingMultipleHostnames(t *testing.T) {
 
 	for _, host := range hostnames {
 		resp := doGet(t, v, host)
-		resp.Body.Close()
+		if err := resp.Body.Close(); err != nil {
+			t.Fatal(err)
+		}
 		if resp.Status != "200 svc" {
 			t.Errorf("host %s: want %q, got %q", host, "200 svc", resp.Status)
 		}
@@ -396,7 +406,9 @@ func TestRoutingViaSNI(t *testing.T) {
 	}
 	for _, tc := range cases {
 		resp := doGetTLS(t, v.TLSURL, tc.host)
-		resp.Body.Close()
+		if err := resp.Body.Close(); err != nil {
+			t.Fatal(err)
+		}
 		if resp.Status != "200 "+tc.wantSvc {
 			t.Errorf("SNI %s: want %q, got %q", tc.host, "200 "+tc.wantSvc, resp.Status)
 		}
@@ -436,12 +448,16 @@ func TestReload(t *testing.T) {
 
 	// Verify initial routing
 	resp := doGet(t, v, "foo.com")
-	resp.Body.Close()
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if resp.Status != "200 foo_service" {
 		t.Fatalf("initial foo.com: want %q, got %q", "200 foo_service", resp.Status)
 	}
 	resp = doGet(t, v, "bar.com")
-	resp.Body.Close()
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if resp.Status != "200 bar_service" {
 		t.Fatalf("initial bar.com: want %q, got %q", "200 bar_service", resp.Status)
 	}
@@ -460,19 +476,25 @@ func TestReload(t *testing.T) {
 	}
 
 	resp = doGet(t, v, "foo.com")
-	resp.Body.Close()
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if resp.Status != "200 foo_service" {
 		t.Errorf("after reload foo.com: want %q, got %q", "200 foo_service", resp.Status)
 	}
 
 	resp = doGet(t, v, "baz.com")
-	resp.Body.Close()
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if resp.Status != "200 baz_service" {
 		t.Errorf("after reload baz.com: want %q, got %q", "200 baz_service", resp.Status)
 	}
 
 	resp = doGet(t, v, "bar.com")
-	resp.Body.Close()
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if resp.StatusCode != 404 {
 		t.Errorf("after reload bar.com: want 404, got %d", resp.StatusCode)
 	}
@@ -581,7 +603,9 @@ func TestReloadRollback(t *testing.T) {
 
 	// Verify initial routing works
 	resp := doGet(t, v, "foo.com")
-	resp.Body.Close()
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if resp.Status != "200 foo_service" {
 		t.Fatalf("initial foo.com: want %q, got %q", "200 foo_service", resp.Status)
 	}
@@ -606,7 +630,9 @@ func TestReloadRollback(t *testing.T) {
 
 	// Old routing must still work
 	resp = doGet(t, v, "foo.com")
-	resp.Body.Close()
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if resp.Status != "200 foo_service" {
 		t.Errorf("after failed reload foo.com: want %q, got %q", "200 foo_service", resp.Status)
 	}

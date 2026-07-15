@@ -20,23 +20,23 @@ func WriteFileAtomic(path, content string) error {
 	syncErr := f.Sync()
 	closeErr := f.Close()
 	if writeErr != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return writeErr
 	}
 	if syncErr != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return syncErr
 	}
 	if closeErr != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return closeErr
 	}
 	if err := os.Chmod(tmp, 0644); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return err
 	}
 	return nil

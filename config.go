@@ -151,10 +151,6 @@ func validateCmdfileConfig(cfg VCLConfig) error {
 	return validateTLS(cfg.TLS)
 }
 
-func validateGenerationTimestamp(timestamp string) error {
-	return validateObjectNamePart("timestamp", timestamp)
-}
-
 func checkDuplicateNames(configs []VCLConfig) error {
 	seen := map[string]string{}
 	for _, cfg := range configs {

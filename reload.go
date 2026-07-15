@@ -14,22 +14,22 @@ import (
 func vclRollback(ctx context.Context, conn *adm.Conn, hasStagedTLS bool, routingVCLName string, loadedLabels, loadedVCLs []string, stderr io.Writer) {
 	if hasStagedTLS {
 		if err := conn.TLSCertRollback(ctx); err != nil {
-			fmt.Fprintf(stderr, "warning: rollback TLS certs: %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "warning: rollback TLS certs: %v\n", err)
 		}
 	}
 	if routingVCLName != "" {
 		if err := conn.VCLDiscard(ctx, routingVCLName); err != nil {
-			fmt.Fprintf(stderr, "warning: rollback discard %s: %v\n", routingVCLName, err)
+			_, _ = fmt.Fprintf(stderr, "warning: rollback discard %s: %v\n", routingVCLName, err)
 		}
 	}
 	for _, name := range loadedLabels {
 		if err := conn.VCLDiscard(ctx, name); err != nil {
-			fmt.Fprintf(stderr, "warning: rollback discard %s: %v\n", name, err)
+			_, _ = fmt.Fprintf(stderr, "warning: rollback discard %s: %v\n", name, err)
 		}
 	}
 	for _, name := range loadedVCLs {
 		if err := conn.VCLDiscard(ctx, name); err != nil {
-			fmt.Fprintf(stderr, "warning: rollback discard %s: %v\n", name, err)
+			_, _ = fmt.Fprintf(stderr, "warning: rollback discard %s: %v\n", name, err)
 		}
 	}
 }
@@ -186,12 +186,12 @@ func (b *Builder) ReloadVarnish(ctx context.Context, conn *adm.Conn, configs []V
 	// Stage 7: discard old route-builder objects from snapshot, in dependency order.
 	warnDiscard := func(name string, err error) {
 		if err != nil {
-			fmt.Fprintf(stderr, "warning: cleanup %s: %v\n", name, err)
+			_, _ = fmt.Fprintf(stderr, "warning: cleanup %s: %v\n", name, err)
 		}
 	}
 	keep, err := b.ManagedVCLNames(configs, []byte(routingContent))
 	if err != nil {
-		fmt.Fprintf(stderr, "warning: build cleanup keep set: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "warning: build cleanup keep set: %v\n", err)
 		keep = map[string]bool{routingVCLName: true}
 		for _, name := range routeNames {
 			keep[name.VCL] = true
@@ -210,14 +210,14 @@ func (b *Builder) ReloadVarnish(ctx context.Context, conn *adm.Conn, configs []V
 			continue
 		}
 		if err := conn.TLSCertDiscard(ctx, id); err != nil {
-			fmt.Fprintf(stderr, "warning: cleanup cert %s: %v\n", id, err)
+			_, _ = fmt.Fprintf(stderr, "warning: cleanup cert %s: %v\n", id, err)
 		} else {
 			discarded = true
 		}
 	}
 	if discarded {
 		if err := conn.TLSCertCommit(ctx); err != nil {
-			fmt.Fprintf(stderr, "warning: cleanup cert commit: %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "warning: cleanup cert commit: %v\n", err)
 		}
 	}
 

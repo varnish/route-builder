@@ -150,7 +150,9 @@ func TestRunVCLDuplicateNamesRejected(t *testing.T) {
 	dir := t.TempDir()
 	a := writeTempVCL(t, dir, "foo_service", []string{"a.com"})
 	subdir := filepath.Join(dir, "sub")
-	os.MkdirAll(subdir, 0755)
+	if err := os.MkdirAll(subdir, 0755); err != nil {
+		t.Fatal(err)
+	}
 	b := writeTempVCL(t, subdir, "foo_service", []string{"b.com"})
 	var stdout, stderr strings.Builder
 	code := run([]string{"-cmdfile", "none", "-vclfile", "none", "-yamlfile", "-", a, b}, &stdout, &stderr)
@@ -163,7 +165,9 @@ func TestRunVCLDuplicateHostnamesRejected(t *testing.T) {
 	dir := t.TempDir()
 	a := writeTempVCL(t, dir, "foo", []string{"shared.com"})
 	subdir := filepath.Join(dir, "sub")
-	os.MkdirAll(subdir, 0755)
+	if err := os.MkdirAll(subdir, 0755); err != nil {
+		t.Fatal(err)
+	}
 	b := writeTempVCL(t, subdir, "bar", []string{"shared.com"})
 	var stdout, stderr strings.Builder
 	code := run([]string{"-cmdfile", "none", "-vclfile", "none", "-yamlfile", "-", a, b}, &stdout, &stderr)
@@ -450,7 +454,9 @@ func TestRunErrors(t *testing.T) {
 	t.Run("bad vcl file", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "bad.vcl")
-		os.WriteFile(path, []byte("vcl 4.1;\n"), 0644)
+		if err := os.WriteFile(path, []byte("vcl 4.1;\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
 		var stdout, stderr strings.Builder
 		code := run([]string{"-cmdfile", "none", "-vclfile", "none", path}, &stdout, &stderr)
 		if code != 1 {
