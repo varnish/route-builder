@@ -1,6 +1,8 @@
-package main
+package routebuilder
 
 import (
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 )
@@ -25,13 +27,13 @@ func TestHostnameToVCL(t *testing.T) {
 
 func TestBuildRoutingVCL(t *testing.T) {
 	configs := []VCLConfig{
-		{Name: "foo_service", Hostnames: []string{"foo.com", "www.foo.com"}},
+		{Name: "foo-service", Hostnames: []string{"foo.com", "www.foo.com"}},
 		{Name: "bar_service", Hostnames: []string{"bar.com"}},
 		{Name: "wc_service", Hostnames: []string{"*.wc.com"}},
 	}
 
 	const ts = "2024-01-15T10-30-45_0"
-	got, err := buildRoutingVCL(configs, ts)
+	got, err := NewBuilder(WithConstantNamer(ts)).BuildRoutingVCL(configs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -48,7 +50,7 @@ func TestBuildRoutingVCL(t *testing.T) {
 		// non-TLS plain port strip
 		`regsub(req.http.host, ":\d+$", "")`,
 		`req.http.host == "foo.com" || req.http.host == "www.foo.com"`,
-		"return(vcl(rb-label-foo_service-2024-01-15T10-30-45_0));",
+		"return(vcl(rb-label-foo-service-2024-01-15T10-30-45_0));",
 		`req.http.host == "bar.com"`,
 		"return(vcl(rb-label-bar_service-2024-01-15T10-30-45_0));",
 		`req.http.host ~ "^[^.]+\.wc\.com$"`,
@@ -64,15 +66,16 @@ func TestBuildRoutingVCL(t *testing.T) {
 
 func TestBuildCmdfile(t *testing.T) {
 	configs := []VCLConfig{
-		{Name: "foo_service", VclPath: "/etc/vcl/foo.vcl"},
-		{Name: "bar_service", VclPath: "/etc/vcl/bar.vcl"},
+		{Name: "foo_service", Hostnames: []string{"foo.com"}, VclPath: "/etc/vcl/foo.vcl"},
+		{Name: "bar_service", Hostnames: []string{"bar.com"}, VclPath: "/etc/vcl/bar.vcl"},
 	}
 
 	const ts = "2024-01-15T10-30-45_0"
-	got, err := buildCmdfile(configs, "/etc/vcl/routing.vcl", ts)
+	plan, err := NewBuilder(WithConstantNamer(ts)).BuildCmdfilePlan(configs, "/etc/vcl/routing.vcl")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	got := plan.String()
 
 	checks := []string{
 		`vcl.load rb-vcl-foo_service-2024-01-15T10-30-45_0 "/etc/vcl/foo.vcl"`,
@@ -92,26 +95,344 @@ func TestBuildCmdfile(t *testing.T) {
 	}
 }
 
+func TestBuildRoutingVCLMD5Names(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTempVCL(t, dir, "foo_service", []string{"foo.com"})
+	cfg, err := ParseVCL(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	suffix := contentHash(data)
+
+	got, err := NewBuilder(WithMD5Namer()).BuildRoutingVCL([]VCLConfig{cfg})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "return(vcl(rb-label-foo_service-" + suffix + "));"
+	if !strings.Contains(got, want) {
+		t.Fatalf("want %q in routing VCL:\n%s", want, got)
+	}
+}
+
+func TestBuildCmdfilePlanMD5Names(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTempVCL(t, dir, "foo_service", []string{"foo.com"})
+	cfg, err := ParseVCL(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	builder := NewBuilder(WithMD5Namer())
+	routingVCL, err := builder.BuildRoutingVCL([]VCLConfig{cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	routingPath := writeRoutesYAML(t, dir, "routing.vcl", routingVCL)
+	routeData, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routeSuffix := contentHash(routeData)
+	routingSuffix := contentHash([]byte(routingVCL))
+
+	first, err := builder.BuildCmdfilePlan([]VCLConfig{cfg}, routingPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	second, err := NewBuilder(WithMD5Namer()).BuildCmdfilePlan([]VCLConfig{cfg}, routingPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if first.String() != second.String() {
+		t.Fatalf("MD5 cmdfile changed across builders:\nfirst:\n%s\nsecond:\n%s", first.String(), second.String())
+	}
+	for _, want := range []string{
+		`vcl.load rb-vcl-foo_service-` + routeSuffix + ` "` + path + `"`,
+		`vcl.label rb-label-foo_service-` + routeSuffix + ` rb-vcl-foo_service-` + routeSuffix,
+		`vcl.load rb-routing-` + routingSuffix + ` "` + routingPath + `"`,
+		`vcl.use rb-routing-` + routingSuffix,
+	} {
+		if !strings.Contains(first.String(), want) {
+			t.Errorf("want %q in MD5 cmdfile:\n%s", want, first.String())
+		}
+	}
+}
+
+func TestManagedVCLNames(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTempVCL(t, dir, "foo_service", []string{"foo.com"})
+	cfg, err := ParseVCL(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routingContent := []byte("routing content")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routeSuffix := contentHash(data)
+	routingSuffix := contentHash(routingContent)
+
+	got, err := NewBuilder(WithMD5Namer()).ManagedVCLNames([]VCLConfig{cfg}, routingContent)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, want := range []string{
+		"rb-routing-" + routingSuffix,
+		"rb-vcl-foo_service-" + routeSuffix,
+		"rb-label-foo_service-" + routeSuffix,
+	} {
+		if !got[want] {
+			t.Fatalf("missing %q in keep set: %#v", want, got)
+		}
+	}
+}
+
+func TestBuildCmdfilePlanMD5NamesWithExisting(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTempVCL(t, dir, "foo_service", []string{"foo.com"})
+	cfg, err := ParseVCL(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	builder := NewBuilder(WithMD5Namer())
+	routingVCL, err := builder.BuildRoutingVCL([]VCLConfig{cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	routingPath := writeRoutesYAML(t, dir, "routing.vcl", routingVCL)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routeSuffix := contentHash(data)
+	existing := []string{
+		"rb-vcl-foo_service-" + routeSuffix,
+		"rb-label-foo_service-" + routeSuffix,
+	}
+
+	plan, err := builder.BuildCmdfilePlan([]VCLConfig{cfg}, routingPath, WithExistingVCLNames(existing...))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := plan.String()
+	if strings.Contains(got, "vcl.load rb-vcl-foo_service-") || strings.Contains(got, "vcl.label rb-label-foo_service-") {
+		t.Fatalf("existing MD5 route objects should be skipped:\n%s", got)
+	}
+	if !strings.Contains(got, "vcl.use rb-routing-") {
+		t.Fatalf("missing vcl.use command:\n%s", got)
+	}
+}
+
+func TestBuildVCLProgram(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := writeRoutesYAML(t, dir, "target.vcl", "vcl 4.1;\n")
+	entryPath := writeRoutesYAML(t, dir, "entry.vcl", "")
+	targetContent, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	builder := NewBuilder(
+		WithMD5Namer(),
+		WithEntryNameSpec(EntityNameSpec{Prefix: "entry__"}),
+		WithEntryRenderer(func(targets []ResolvedVCLTarget) ([]byte, error) {
+			if len(targets) != 1 {
+				return nil, fmt.Errorf("want one target, got %d", len(targets))
+			}
+			return []byte("return(vcl(" + targets[0].LabelName + "));\n"), nil
+		}),
+	)
+
+	result, err := builder.BuildVCLProgram([]VCLTargetSpec{{
+		VCLName:   EntityNameSpec{Prefix: "target__", Suffix: "-vcl"},
+		VCLPath:   targetPath,
+		LabelName: &EntityNameSpec{Prefix: "target__", Suffix: "-label"},
+	}}, entryPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	plan := result.CmdfilePlan.String()
+	targetSuffix := contentHash(targetContent)
+	entrySuffix := contentHash([]byte(result.EntryVCL))
+	for _, want := range []string{
+		"target__" + targetSuffix + "-vcl",
+		"target__" + targetSuffix + "-label",
+		"entry__" + entrySuffix,
+	} {
+		if !result.ManagedVCLNames[want] {
+			t.Fatalf("missing managed name %q in %#v", want, result.ManagedVCLNames)
+		}
+	}
+	for _, want := range []string{
+		`vcl.load target__` + targetSuffix + `-vcl "` + targetPath + `"`,
+		`vcl.label target__` + targetSuffix + `-label target__` + targetSuffix + `-vcl`,
+		`vcl.load entry__` + entrySuffix + ` "` + entryPath + `"`,
+		`vcl.use entry__` + entrySuffix,
+	} {
+		if !strings.Contains(plan, want) {
+			t.Fatalf("want %q in plan:\n%s", want, plan)
+		}
+	}
+}
+
+func TestBuildVCLProgramPlanMD5DefaultsContentFromPaths(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := writeRoutesYAML(t, dir, "target.vcl", "vcl 4.1;\n")
+	entryPath := writeRoutesYAML(t, dir, "entry.vcl", "entry content")
+	targetContent, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entryContent, err := os.ReadFile(entryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetSuffix := contentHash(targetContent)
+	entrySuffix := contentHash(entryContent)
+	label := EntityNameSpec{Prefix: "target__", Suffix: "-label"}
+	plan, err := NewBuilder(WithMD5Namer()).BuildVCLProgramPlan(VCLProgramSpec{
+		Targets: []VCLTargetSpec{{
+			VCLName:   EntityNameSpec{Prefix: "target__", Suffix: "-vcl"},
+			VCLPath:   targetPath,
+			LabelName: &label,
+		}},
+		Entry: EntryVCLSpec{
+			Name:    EntityNameSpec{Prefix: "entry__"},
+			VCLPath: entryPath,
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, want := range []string{
+		`vcl.load target__` + targetSuffix + `-vcl "` + targetPath + `"`,
+		`vcl.label target__` + targetSuffix + `-label target__` + targetSuffix + `-vcl`,
+		`vcl.load entry__` + entrySuffix + ` "` + entryPath + `"`,
+		`vcl.use entry__` + entrySuffix,
+	} {
+		if !strings.Contains(plan.String(), want) {
+			t.Fatalf("want %q in plan:\n%s", want, plan.String())
+		}
+	}
+}
+
+func TestBuildVCLProgramPlanWithExisting(t *testing.T) {
+	builder := NewBuilder(WithConstantNamer("ts"))
+	label := EntityNameSpec{Prefix: "target-", Suffix: "-label"}
+	plan, err := builder.BuildVCLProgramPlan(VCLProgramSpec{
+		Targets: []VCLTargetSpec{{
+			VCLName:   EntityNameSpec{Prefix: "target-", Suffix: "-vcl"},
+			VCLPath:   "/etc/vcl/target.vcl",
+			LabelName: &label,
+		}},
+		Entry: EntryVCLSpec{
+			Name:    EntityNameSpec{Prefix: "entry-"},
+			VCLPath: "/etc/vcl/entry.vcl",
+		},
+	}, WithExistingVCLNames("target-ts-vcl", "target-ts-label", "entry-ts"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := plan.String()
+	for _, notWant := range []string{"vcl.load target-ts-vcl", "vcl.label target-ts-label", "vcl.load entry-ts"} {
+		if strings.Contains(got, notWant) {
+			t.Fatalf("existing program object %q should be skipped:\n%s", notWant, got)
+		}
+	}
+	if got != "vcl.use entry-ts\n" {
+		t.Fatalf("want only vcl.use, got:\n%s", got)
+	}
+}
+
+func TestBuildCmdfilePlanWithExisting(t *testing.T) {
+	configs := []VCLConfig{
+		{Name: "foo_service", Hostnames: []string{"foo.com"}, VclPath: "/etc/vcl/foo.vcl"},
+		{Name: "bar_service", Hostnames: []string{"bar.com"}, VclPath: "/etc/vcl/bar.vcl"},
+	}
+	const ts = "2024-01-15T10-30-45_0"
+	existing := []string{
+		"rb-vcl-foo_service-" + ts,
+		"rb-label-foo_service-" + ts,
+		"rb-routing-" + ts,
+	}
+
+	plan, err := NewBuilder(WithConstantNamer(ts)).BuildCmdfilePlan(configs, "/etc/vcl/routing.vcl", WithExistingVCLNames(existing...))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := plan.String()
+	for _, notWant := range []string{
+		`vcl.load rb-vcl-foo_service-2024-01-15T10-30-45_0`,
+		`vcl.label rb-label-foo_service-2024-01-15T10-30-45_0`,
+		`vcl.load rb-routing-2024-01-15T10-30-45_0`,
+	} {
+		if strings.Contains(got, notWant) {
+			t.Errorf("did not expect %q in output:\n%s", notWant, got)
+		}
+	}
+	for _, want := range []string{
+		`vcl.load rb-vcl-bar_service-2024-01-15T10-30-45_0 "/etc/vcl/bar.vcl"`,
+		`vcl.label rb-label-bar_service-2024-01-15T10-30-45_0 rb-vcl-bar_service-2024-01-15T10-30-45_0`,
+		`vcl.use rb-routing-2024-01-15T10-30-45_0`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("want %q in output:\n%s", want, got)
+		}
+	}
+}
+
+func TestCleanupCommandsFromNames(t *testing.T) {
+	names := []string{
+		"rb-vcl-stale-b",
+		"rb-label-stale-a",
+		"rb-routing-old",
+		"rb-vcl-keep",
+		"rb-label-keep",
+		"rb-routing-current",
+		"unrelated",
+	}
+	keep := map[string]bool{
+		"rb-vcl-keep":        true,
+		"rb-label-keep":      true,
+		"rb-routing-current": true,
+	}
+	got := strings.Join(CleanupCommandsFromNames(names, keep), "\n")
+	want := strings.Join([]string{
+		"vcl.discard rb-routing-old",
+		"vcl.discard rb-label-stale-a",
+		"vcl.discard rb-vcl-stale-b",
+	}, "\n")
+	if got != want {
+		t.Fatalf("want:\n%s\ngot:\n%s", want, got)
+	}
+}
+
 func TestBuildCmdfileTLS(t *testing.T) {
 	const ts = "2024-01-15T10-30-45_0"
 
 	configs := []VCLConfig{
 		{
-			Name:    "foo_service",
-			VclPath: "/etc/vcl/foo.vcl",
-			TLS:     []TLSEntry{{PEM: "/etc/certs/foo.pem"}},
+			Name:      "foo_service",
+			Hostnames: []string{"foo.com"},
+			VclPath:   "/etc/vcl/foo.vcl",
+			TLS:       []TLSEntry{{PEM: "/etc/certs/foo.pem"}},
 		},
 		{
-			Name:    "bar_service",
-			VclPath: "/etc/vcl/bar.vcl",
-			TLS:     []TLSEntry{{Cert: "/etc/certs/bar.crt", Key: "/etc/certs/bar.key"}},
+			Name:      "bar_service",
+			Hostnames: []string{"bar.com"},
+			VclPath:   "/etc/vcl/bar.vcl",
+			TLS:       []TLSEntry{{Cert: "/etc/certs/bar.crt", Key: "/etc/certs/bar.key"}},
 		},
 	}
 
-	got, err := buildCmdfile(configs, "/etc/vcl/routing.vcl", ts)
+	plan, err := NewBuilder(WithConstantNamer(ts)).BuildCmdfilePlan(configs, "/etc/vcl/routing.vcl")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	got := plan.String()
 
 	pemIdx := strings.Index(got, `tls.cert.load rb-cert-foo_service-0-`+ts+` "/etc/certs/foo.pem"`)
 	keyIdx := strings.Index(got, `tls.cert.load rb-cert-bar_service-0-`+ts+` "/etc/certs/bar.crt" -k "/etc/certs/bar.key"`)
@@ -135,30 +456,109 @@ func TestBuildCmdfileTLS(t *testing.T) {
 	}
 }
 
-func TestBuildCmdfileNoVclPath(t *testing.T) {
-	// VclPath is mandatory after validation; passing an empty VclPath is a
-	// programmer error. The template no longer guards on it — verify the output
-	// would contain the empty string, confirming the guard was removed (the
-	// defensive panic in reloadVarnish catches this at runtime).
-	configs := []VCLConfig{
-		{Name: "foo_service", VclPath: "/etc/varnish/foo.vcl"},
+func TestBuildCmdfileTLSMD5Names(t *testing.T) {
+	dir := t.TempDir()
+	vclPath := writeTempVCL(t, dir, "foo_service", []string{"foo.com"})
+	pemPath := writeRoutesYAML(t, dir, "foo.pem", "pem data")
+	cfg := VCLConfig{Name: "foo_service", Hostnames: []string{"foo.com"}, VclPath: vclPath, TLS: []TLSEntry{{PEM: pemPath}}}
+	routingVCL, err := NewBuilder(WithMD5Namer()).BuildRoutingVCL([]VCLConfig{cfg})
+	if err != nil {
+		t.Fatal(err)
 	}
-	const ts = "2024-01-15T10-30-45_0"
-	got, err := buildCmdfile(configs, "/etc/vcl/routing.vcl", ts)
+	routingPath := writeRoutesYAML(t, dir, "routing.vcl", routingVCL)
+
+	plan, err := NewBuilder(WithMD5Namer()).BuildCmdfilePlan([]VCLConfig{cfg}, routingPath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(got, "vcl.load rb-vcl-foo_service-") {
-		t.Errorf("expected vcl.load line, got:\n%s", got)
+	certSuffix := contentHash([]byte("pem data"))
+	want := `tls.cert.load rb-cert-foo_service-0-` + certSuffix + ` "` + pemPath + `"`
+	if !strings.Contains(plan.String(), want) {
+		t.Fatalf("want %q in cmdfile:\n%s", want, plan.String())
 	}
-	if !strings.Contains(got, "vcl.load rb-routing-") {
-		t.Errorf("expected routing vcl.load:\n%s", got)
+}
+
+func TestBuildCmdfileNoVclPath(t *testing.T) {
+	configs := []VCLConfig{{Name: "foo_service"}}
+	_, err := NewBuilder().BuildCmdfilePlan(configs, "/etc/vcl/routing.vcl")
+	if err == nil || !strings.Contains(err.Error(), "vclPath") {
+		t.Fatalf("want vclPath validation error, got %v", err)
+	}
+}
+
+func TestBuildGenerationValidation(t *testing.T) {
+	_, err := NewBuilder().BuildRoutingVCL([]VCLConfig{{Name: "bad/name", Hostnames: []string{"foo.com"}}})
+	if err == nil || !strings.Contains(err.Error(), "valid route name") {
+		t.Fatalf("want route name validation error, got %v", err)
+	}
+
+	_, err = NewBuilder(WithConstantNamer("bad timestamp")).BuildRoutingVCL([]VCLConfig{{Name: "foo", Hostnames: []string{"foo.com"}}})
+	if err == nil || !strings.Contains(err.Error(), "suffix") {
+		t.Fatalf("want suffix validation error, got %v", err)
+	}
+
+	_, err = NewBuilder().BuildCmdfilePlan([]VCLConfig{{Name: "foo", Hostnames: []string{"foo.com"}, VclPath: "/etc/vcl/foo.vcl", TLS: []TLSEntry{{}}}}, "/etc/vcl/routing.vcl")
+	if err == nil || !strings.Contains(err.Error(), "must specify pem or key+cert") {
+		t.Fatalf("want TLS validation error, got %v", err)
+	}
+}
+
+func TestCustomEntityNamer(t *testing.T) {
+	namer := entityNamerFunc(func(prefix string, content []byte) (string, error) {
+		return prefix + "custom", nil
+	})
+	got, err := NewBuilder(WithEntityNamer(namer)).BuildRoutingVCL([]VCLConfig{{Name: "foo", Hostnames: []string{"foo.com"}}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(got, "return(vcl(rb-label-foo-custom));") {
+		t.Fatalf("custom namer not used:\n%s", got)
+	}
+}
+
+func TestNewBuilderDefault(t *testing.T) {
+	plan, err := NewBuilder().BuildCmdfilePlan([]VCLConfig{{Name: "foo", Hostnames: []string{"foo.com"}, VclPath: "/etc/vcl/foo.vcl"}}, "/etc/vcl/routing.vcl")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(plan.String(), "rb-vcl-foo-") || strings.Contains(plan.String(), "rb-vcl-foo- ") {
+		t.Fatalf("default builder did not produce a suffixed VCL name:\n%s", plan.String())
+	}
+}
+
+func TestMD5NameChangesWhenVCLContentChanges(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTempVCL(t, dir, "foo_service", []string{"foo.com"})
+	cfg, err := ParseVCL(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := NewBuilder(WithMD5Namer()).BuildRoutingVCL([]VCLConfig{cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fmt.Fprintln(f, "// changed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewBuilder(WithMD5Namer()).BuildRoutingVCL([]VCLConfig{cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatalf("MD5 routing VCL did not change after route content changed")
 	}
 }
 
 func TestWriteOutputStdout(t *testing.T) {
 	var buf strings.Builder
-	if err := writeOutput("-", "hello world", &buf); err != nil {
+	if err := WriteOutput("-", "hello world", &buf); err != nil {
 		t.Fatal(err)
 	}
 	if buf.String() != "hello world" {

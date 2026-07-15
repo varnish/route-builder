@@ -1,4 +1,4 @@
-package main
+package routebuilder
 
 import (
 	"fmt"
@@ -128,14 +128,19 @@ func TestUnmarshalConfig(t *testing.T) {
 			wantErr: "missing required field: name",
 		},
 		{
-			name:    "invalid name starts with digit",
-			input:   "name: 1bad\nhostnames:\n  - foo.com",
-			wantErr: "not a valid VCL label name",
+			name:  "valid name has hyphen",
+			input: "name: my-service\nhostnames:\n  - foo.com",
+			want:  VCLConfig{Name: "my-service", Hostnames: []string{"foo.com"}},
 		},
 		{
-			name:    "invalid name has hyphen",
-			input:   "name: my-service\nhostnames:\n  - foo.com",
-			wantErr: "not a valid VCL label name",
+			name:    "invalid name starts with digit",
+			input:   "name: 1bad\nhostnames:\n  - foo.com",
+			wantErr: "not a valid route name",
+		},
+		{
+			name:    "invalid name has slash",
+			input:   "name: my/service\nhostnames:\n  - foo.com",
+			wantErr: "not a valid route name",
 		},
 		{
 			name:    "reserved name routing",
@@ -296,6 +301,25 @@ func TestCheckDuplicateHostnames(t *testing.T) {
 	})
 }
 
+func TestValidateConfigs(t *testing.T) {
+	valid := []VCLConfig{{Name: "my-service", Hostnames: []string{"foo.com"}}}
+	if err := ValidateConfigs(valid); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	invalid := []VCLConfig{{Name: "bad/name", Hostnames: []string{"foo.com"}}}
+	err := ValidateConfigs(invalid)
+	if err == nil || !strings.Contains(err.Error(), "valid route name") {
+		t.Fatalf("want route name validation error, got %v", err)
+	}
+
+	missingHostnames := []VCLConfig{{Name: "foo"}}
+	err = ValidateConfigs(missingHostnames)
+	if err == nil || !strings.Contains(err.Error(), "missing required field: hostnames") {
+		t.Fatalf("want hostnames validation error, got %v", err)
+	}
+}
+
 func TestValidateHostname(t *testing.T) {
 	valid := []string{
 		"*.example.com",
@@ -370,7 +394,7 @@ func TestFindRoute(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := findRoute(tt.host, configs)
+		got := FindRoute(tt.host, configs)
 		if tt.want == "" {
 			if got != nil {
 				t.Errorf("host %s: want nil, got %v", tt.host, got)
@@ -387,7 +411,7 @@ func TestParseRoutes(t *testing.T) {
 		os.WriteFile(filepath.Join(dir, "foo.vcl"), []byte("vcl 4.1;"), 0644)
 		yaml := "routes:\n  - name: foo\n    hostnames:\n      - foo.com\n    vclPath: foo.vcl\n"
 		path := writeRoutesYAML(t, dir, "routes.yaml", yaml)
-		configs, err := parseRoutes(path)
+		configs, err := ParseRoutes(path)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -410,7 +434,7 @@ func TestParseRoutes(t *testing.T) {
 		dir := t.TempDir()
 		yaml := "routes:\n  - name: foo\n    hostnames:\n      - foo.com\n"
 		path := writeRoutesYAML(t, dir, "routes.yaml", yaml)
-		_, err := parseRoutes(path)
+		_, err := ParseRoutes(path)
 		if err == nil {
 			t.Fatal("want error for route missing vclPath:, got nil")
 		}
@@ -426,7 +450,7 @@ func TestParseRoutes(t *testing.T) {
 		os.WriteFile(absVCL, []byte("vcl 4.1;"), 0644)
 		yaml := fmt.Sprintf("routes:\n  - name: foo\n    hostnames:\n      - foo.com\n    vclPath: %q\n", absVCL)
 		path := writeRoutesYAML(t, dir, "routes.yaml", yaml)
-		configs, err := parseRoutes(path)
+		configs, err := ParseRoutes(path)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -441,7 +465,7 @@ func TestParseRoutes(t *testing.T) {
 		vclFile := writeTempVCL(t, dir, "foo_service", []string{"foo.com"})
 		yaml := fmt.Sprintf("routes:\n  - name: foo\n    hostnames:\n      - foo.com\n    vclPath: %q\n    tls:\n      - pem: cert.pem\n", vclFile)
 		path := writeRoutesYAML(t, dir, "routes.yaml", yaml)
-		configs, err := parseRoutes(path)
+		configs, err := ParseRoutes(path)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -454,7 +478,7 @@ func TestParseRoutes(t *testing.T) {
 	t.Run("empty routes", func(t *testing.T) {
 		dir := t.TempDir()
 		path := writeRoutesYAML(t, dir, "routes.yaml", "routes: []\n")
-		_, err := parseRoutes(path)
+		_, err := ParseRoutes(path)
 		if err == nil || !strings.Contains(err.Error(), "no routes") {
 			t.Fatalf("want 'no routes' error, got %v", err)
 		}
@@ -462,440 +486,11 @@ func TestParseRoutes(t *testing.T) {
 
 	t.Run("invalid route name", func(t *testing.T) {
 		dir := t.TempDir()
-		yaml := "routes:\n  - name: bad-name\n    hostnames:\n      - foo.com\n"
+		yaml := "routes:\n  - name: bad/name\n    hostnames:\n      - foo.com\n"
 		path := writeRoutesYAML(t, dir, "routes.yaml", yaml)
-		_, err := parseRoutes(path)
-		if err == nil || !strings.Contains(err.Error(), "valid VCL label name") {
+		_, err := ParseRoutes(path)
+		if err == nil || !strings.Contains(err.Error(), "valid route name") {
 			t.Fatalf("want validation error, got %v", err)
-		}
-	})
-}
-
-// --- run() tests: VCL input (old parse-vcl) ---
-
-func TestRunVCLToYAMLStdout(t *testing.T) {
-	dir := t.TempDir()
-	fooVCL := writeTempVCL(t, dir, "foo_service", []string{"foo.com", "www.foo.com"})
-	var stdout, stderr strings.Builder
-	code := run([]string{"-cmdfile", "none", "-vclfile", "none", "-yamlfile", "-", fooVCL}, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("exit %d: %s", code, stderr.String())
-	}
-	out := stdout.String()
-	for _, want := range []string{"routes:", "name: foo_service", "foo.com", "www.foo.com"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("want %q in output, got:\n%s", want, out)
-		}
-	}
-}
-
-func TestRunVCLToYAMLFile(t *testing.T) {
-	dir := t.TempDir()
-	fooVCL := writeTempVCL(t, dir, "foo_service", []string{"foo.com"})
-	outPath := filepath.Join(dir, "routes.yaml")
-	var stdout, stderr strings.Builder
-	code := run([]string{"-cmdfile", "none", "-vclfile", "none", "-yamlfile", outPath, fooVCL}, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("exit %d: %s", code, stderr.String())
-	}
-	data, err := os.ReadFile(outPath)
-	if err != nil {
-		t.Fatalf("output file not written: %v", err)
-	}
-	if !strings.Contains(string(data), "foo_service") {
-		t.Errorf("want foo_service in output file, got:\n%s", data)
-	}
-}
-
-func TestRunVCLYAMLIncludesVCLPath(t *testing.T) {
-	dir := t.TempDir()
-	fooVCL := writeTempVCL(t, dir, "foo_service", []string{"foo.com"})
-	var stdout, stderr strings.Builder
-	code := run([]string{"-cmdfile", "none", "-vclfile", "none", "-yamlfile", "-", fooVCL}, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("exit %d: %s", code, stderr.String())
-	}
-	if !strings.Contains(stdout.String(), "vclPath:") {
-		t.Errorf("want vclPath: path in output, got:\n%s", stdout.String())
-	}
-}
-
-func TestRunVCLDuplicateNamesRejected(t *testing.T) {
-	dir := t.TempDir()
-	a := writeTempVCL(t, dir, "foo_service", []string{"a.com"})
-	subdir := filepath.Join(dir, "sub")
-	os.MkdirAll(subdir, 0755)
-	b := writeTempVCL(t, subdir, "foo_service", []string{"b.com"})
-	var stdout, stderr strings.Builder
-	code := run([]string{"-cmdfile", "none", "-vclfile", "none", "-yamlfile", "-", a, b}, &stdout, &stderr)
-	if code != 1 {
-		t.Fatalf("want exit 1 for duplicate name, got %d", code)
-	}
-}
-
-func TestRunVCLDuplicateHostnamesRejected(t *testing.T) {
-	dir := t.TempDir()
-	a := writeTempVCL(t, dir, "foo", []string{"shared.com"})
-	subdir := filepath.Join(dir, "sub")
-	os.MkdirAll(subdir, 0755)
-	b := writeTempVCL(t, subdir, "bar", []string{"shared.com"})
-	var stdout, stderr strings.Builder
-	code := run([]string{"-cmdfile", "none", "-vclfile", "none", "-yamlfile", "-", a, b}, &stdout, &stderr)
-	if code != 1 {
-		t.Fatalf("want exit 1 for duplicate hostname, got %d", code)
-	}
-	if !strings.Contains(stderr.String(), `overlaps with`) {
-		t.Errorf("want duplicate hostname error, got: %s", stderr.String())
-	}
-}
-
-// --- run() tests: YAML input (old generate) ---
-
-func TestRunGenerateDryRun(t *testing.T) {
-	dir := t.TempDir()
-	fooVCL := writeTempVCL(t, dir, "foo_service", []string{"foo.com"})
-	routesYAML := routesYAMLFor(t, dir, "foo_service", []string{"foo.com"}, fooVCL)
-
-	vclPath := filepath.Join(dir, "routing.vcl")
-	cmdfilePath := filepath.Join(dir, "cmdfile")
-
-	var stdout, stderr strings.Builder
-	code := run([]string{"-vclfile", "none", "-cmdfile", "none", routesYAML}, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("exit %d: %s", code, stderr.String())
-	}
-	_ = vclPath
-	_ = cmdfilePath
-}
-
-func TestRunGenerateNoVCL(t *testing.T) {
-	dir := t.TempDir()
-	fooVCL := writeTempVCL(t, dir, "foo_service", []string{"foo.com"})
-	routesYAML := routesYAMLFor(t, dir, "foo_service", []string{"foo.com"}, fooVCL)
-
-	cmdfilePath := filepath.Join(dir, "cmdfile")
-
-	var stdout, stderr strings.Builder
-	code := run([]string{"-vclfile", "none", "-cmdfile", cmdfilePath, routesYAML}, &stdout, &stderr)
-	if code == 0 {
-		t.Fatal("want non-zero exit: -vclfile none with active -cmdfile is invalid")
-	}
-	if !strings.Contains(stderr.String(), "-vclfile") {
-		t.Errorf("want error mentioning -vclfile, got: %s", stderr.String())
-	}
-}
-
-func TestRunGenerateTestRoute(t *testing.T) {
-	dir := t.TempDir()
-	fooVCL := writeTempVCL(t, dir, "foo_service", []string{"foo.com", "www.foo.com"})
-	barVCL := writeTempVCL(t, dir, "bar_service", []string{"bar.com"})
-	routesYAML := writeRoutesYAML(t, dir, "routes.yaml", fmt.Sprintf(
-		"routes:\n  - name: foo_service\n    hostnames:\n      - foo.com\n      - www.foo.com\n    vclPath: %q\n  - name: bar_service\n    hostnames:\n      - bar.com\n    vclPath: %q\n",
-		fooVCL, barVCL,
-	))
-
-	tests := []struct {
-		url      string
-		wantOut  string
-		wantCode int
-	}{
-		{"http://foo.com/path", "foo_service", 0},
-		{"http://www.foo.com:8080/", "foo_service", 0},
-		{"http://bar.com/", "bar_service", 0},
-		{"http://unknown.com/", "no route matched", 1},
-	}
-
-	for _, tt := range tests {
-		var stdout, stderr strings.Builder
-		code := run([]string{"-cmdfile", "none", "-vclfile", "none", "-test-route", tt.url, routesYAML}, &stdout, &stderr)
-		if code != tt.wantCode {
-			t.Fatalf("url %s: want exit %d, got %d: %s", tt.url, tt.wantCode, code, stderr.String())
-		}
-		if !strings.Contains(stdout.String(), tt.wantOut) {
-			t.Errorf("url %s: want %q in output, got %q", tt.url, tt.wantOut, stdout.String())
-		}
-	}
-}
-
-func TestRunGenerateTestRouteWildcard(t *testing.T) {
-	dir := t.TempDir()
-	wcVCL := writeTempVCL(t, dir, "wc_service", []string{"*.example.com"})
-	routesYAML := writeRoutesYAML(t, dir, "routes.yaml", fmt.Sprintf(
-		"routes:\n  - name: wc_service\n    hostnames:\n      - \"*.example.com\"\n    vclPath: %q\n", wcVCL,
-	))
-
-	tests := []struct {
-		url      string
-		wantOut  string
-		wantCode int
-	}{
-		{"http://foo.example.com/", "wc_service", 0},
-		{"http://bar.example.com/", "wc_service", 0},
-		{"http://example.com/", "no route matched", 1},
-		{"http://foo.other.com/", "no route matched", 1},
-	}
-
-	for _, tt := range tests {
-		var stdout, stderr strings.Builder
-		code := run([]string{"-cmdfile", "none", "-vclfile", "none", "-test-route", tt.url, routesYAML}, &stdout, &stderr)
-		if code != tt.wantCode {
-			t.Fatalf("url %s: want exit %d, got %d: %s", tt.url, tt.wantCode, code, stderr.String())
-		}
-		if !strings.Contains(stdout.String(), tt.wantOut) {
-			t.Errorf("url %s: want %q in output, got %q", tt.url, tt.wantOut, stdout.String())
-		}
-	}
-}
-
-func TestRunTestRouteNoFileWrite(t *testing.T) {
-	dir := t.TempDir()
-	fooVCL := writeTempVCL(t, dir, "foo_service", []string{"foo.com"})
-	routesYAML := routesYAMLFor(t, dir, "foo_service", []string{"foo.com"}, fooVCL)
-	cmdfilePath := filepath.Join(dir, "cmdfile")
-	vclfilePath := filepath.Join(dir, "routing.vcl")
-
-	var stdout, stderr strings.Builder
-	code := run([]string{"-cmdfile", cmdfilePath, "-vclfile", vclfilePath, "-test-route", "http://foo.com/", routesYAML}, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("exit %d: %s", code, stderr.String())
-	}
-	if _, err := os.Stat(cmdfilePath); err == nil {
-		t.Error("-test-route wrote cmdfile but should not write files")
-	}
-	if _, err := os.Stat(vclfilePath); err == nil {
-		t.Error("-test-route wrote vclfile but should not write files")
-	}
-}
-
-func TestRunGenerateVCLFile(t *testing.T) {
-	dir := t.TempDir()
-	fooVCL := writeTempVCL(t, dir, "foo_service", []string{"foo.com"})
-	routesYAML := routesYAMLFor(t, dir, "foo_service", []string{"foo.com"}, fooVCL)
-	vclPath := filepath.Join(dir, "routing.vcl")
-
-	var stdout, stderr strings.Builder
-	code := run([]string{"-vclfile", vclPath, "-cmdfile", "none", routesYAML}, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("exit %d: %s", code, stderr.String())
-	}
-	data, err := os.ReadFile(vclPath)
-	if err != nil {
-		t.Fatalf("routing.vcl not written: %v", err)
-	}
-	out := string(data)
-	for _, want := range []string{"vcl 4.1;", "backend default none;", "foo_service", "foo.com"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("want %q in routing.vcl, got:\n%s", want, out)
-		}
-	}
-}
-
-func TestRunVCLFileStdoutRejected(t *testing.T) {
-	dir := t.TempDir()
-	fooVCL := writeTempVCL(t, dir, "foo_service", []string{"foo.com"})
-	routesYAML := routesYAMLFor(t, dir, "foo_service", []string{"foo.com"}, fooVCL)
-
-	var stdout, stderr strings.Builder
-	code := run([]string{"-vclfile", "-", routesYAML}, &stdout, &stderr)
-	if code == 0 {
-		t.Fatal("want non-zero exit for -vclfile - without -cmdfile none")
-	}
-	if !strings.Contains(stderr.String(), "-vclfile -") {
-		t.Errorf("want error mentioning -vclfile -, got: %s", stderr.String())
-	}
-}
-
-func TestRunVCLFileStdoutAllowed(t *testing.T) {
-	dir := t.TempDir()
-	fooVCL := writeTempVCL(t, dir, "foo_service", []string{"foo.com"})
-	routesYAML := routesYAMLFor(t, dir, "foo_service", []string{"foo.com"}, fooVCL)
-
-	var stdout, stderr strings.Builder
-	code := run([]string{"-vclfile", "-", "-cmdfile", "none", routesYAML}, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("exit %d: %s", code, stderr.String())
-	}
-	out := stdout.String()
-	for _, want := range []string{"vcl 4.1;", "backend default none;", "foo_service"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("want %q in stdout, got:\n%s", want, out)
-		}
-	}
-}
-
-func TestRunGenerateStdoutCmdfile(t *testing.T) {
-	dir := t.TempDir()
-	fooVCL := writeTempVCL(t, dir, "foo_service", []string{"foo.com"})
-	routesYAML := routesYAMLFor(t, dir, "foo_service", []string{"foo.com"}, fooVCL)
-	vclPath := filepath.Join(dir, "routing.vcl")
-
-	var stdout, stderr strings.Builder
-	code := run([]string{"-cmdfile", "-", "-vclfile", vclPath, routesYAML}, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("exit %d: %s", code, stderr.String())
-	}
-	out := stdout.String()
-	for _, want := range []string{"vcl.load rb-vcl-foo_service-", "vcl.label rb-label-foo_service-", "vcl.use rb-routing-"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("want %q in stdout, got:\n%s", want, out)
-		}
-	}
-}
-
-func TestRunGenerateNoVclPath(t *testing.T) {
-	dir := t.TempDir()
-	routesYAML := writeRoutesYAML(t, dir, "routes.yaml",
-		"routes:\n  - name: foo\n    hostnames:\n      - foo.com\n")
-	vclPath := filepath.Join(dir, "routing.vcl")
-
-	var stdout, stderr strings.Builder
-	code := run([]string{"-cmdfile", "-", "-vclfile", vclPath, routesYAML}, &stdout, &stderr)
-	if code == 0 {
-		t.Fatal("want non-zero exit for route missing vclPath:, got 0")
-	}
-	if !strings.Contains(stderr.String(), "vclPath") {
-		t.Errorf("want error mentioning 'vclPath' in stderr, got: %s", stderr.String())
-	}
-}
-
-// --- run() error path tests ---
-
-func TestRunErrors(t *testing.T) {
-	t.Run("no args", func(t *testing.T) {
-		var stdout, stderr strings.Builder
-		code := run([]string{}, &stdout, &stderr)
-		if code != 1 {
-			t.Fatalf("want exit 1, got %d", code)
-		}
-	})
-
-	t.Run("unknown extension", func(t *testing.T) {
-		var stdout, stderr strings.Builder
-		code := run([]string{"routes.txt"}, &stdout, &stderr)
-		if code != 1 {
-			t.Fatalf("want exit 1, got %d", code)
-		}
-	})
-
-	t.Run("mixed vcl and yaml", func(t *testing.T) {
-		dir := t.TempDir()
-		vcl := writeTempVCL(t, dir, "foo", []string{"foo.com"})
-		yaml := writeRoutesYAML(t, dir, "routes.yaml", "routes:\n  - name: foo\n    hostnames:\n      - foo.com\n")
-		var stdout, stderr strings.Builder
-		code := run([]string{vcl, yaml}, &stdout, &stderr)
-		if code != 1 {
-			t.Fatalf("want exit 1 for mixed input, got %d", code)
-		}
-	})
-
-	t.Run("yaml input with -yamlfile rejected", func(t *testing.T) {
-		dir := t.TempDir()
-		yaml := writeRoutesYAML(t, dir, "routes.yaml", "routes:\n  - name: foo\n    hostnames:\n      - foo.com\n")
-		var stdout, stderr strings.Builder
-		code := run([]string{"-yamlfile", "-", yaml}, &stdout, &stderr)
-		if code != 1 {
-			t.Fatalf("want exit 1, got %d", code)
-		}
-		if !strings.Contains(stderr.String(), "incompatible") {
-			t.Errorf("want incompatible error, got: %s", stderr.String())
-		}
-	})
-
-	t.Run("vclfile stdout without cmdfile none", func(t *testing.T) {
-		dir := t.TempDir()
-		yaml := writeRoutesYAML(t, dir, "routes.yaml", "routes:\n  - name: foo\n    hostnames:\n      - foo.com\n")
-		var stdout, stderr strings.Builder
-		code := run([]string{"-vclfile", "-", yaml}, &stdout, &stderr)
-		if code != 1 {
-			t.Fatalf("want exit 1, got %d", code)
-		}
-	})
-
-	t.Run("bad routes file", func(t *testing.T) {
-		dir := t.TempDir()
-		path := writeRoutesYAML(t, dir, "bad.yaml", "routes: [unclosed\n")
-		var stdout, stderr strings.Builder
-		code := run([]string{"-cmdfile", "none", "-vclfile", "none", path}, &stdout, &stderr)
-		if code != 1 {
-			t.Fatalf("want exit 1, got %d", code)
-		}
-	})
-
-	t.Run("bad vcl file", func(t *testing.T) {
-		dir := t.TempDir()
-		path := filepath.Join(dir, "bad.vcl")
-		os.WriteFile(path, []byte("vcl 4.1;\n"), 0644)
-		var stdout, stderr strings.Builder
-		code := run([]string{"-cmdfile", "none", "-vclfile", "none", path}, &stdout, &stderr)
-		if code != 1 {
-			t.Fatalf("want exit 1, got %d", code)
-		}
-	})
-
-	t.Run("duplicate names in yaml", func(t *testing.T) {
-		dir := t.TempDir()
-		path := writeRoutesYAML(t, dir, "routes.yaml",
-			"routes:\n  - name: foo\n    hostnames:\n      - foo.com\n  - name: foo\n    hostnames:\n      - bar.com\n")
-		var stdout, stderr strings.Builder
-		code := run([]string{"-cmdfile", "none", "-vclfile", "none", path}, &stdout, &stderr)
-		if code != 1 {
-			t.Fatalf("want exit 1, got %d", code)
-		}
-	})
-
-	t.Run("duplicate hostnames in yaml", func(t *testing.T) {
-		dir := t.TempDir()
-		path := writeRoutesYAML(t, dir, "routes.yaml",
-			"routes:\n  - name: foo\n    hostnames:\n      - shared.com\n  - name: bar\n    hostnames:\n      - shared.com\n")
-		var stdout, stderr strings.Builder
-		code := run([]string{"-cmdfile", "none", "-vclfile", "none", path}, &stdout, &stderr)
-		if code != 1 {
-			t.Fatalf("want exit 1, got %d", code)
-		}
-	})
-
-	t.Run("test-route no hostname", func(t *testing.T) {
-		dir := t.TempDir()
-		fooVCL := writeTempVCL(t, dir, "foo_service", []string{"foo.com"})
-		path := routesYAMLFor(t, dir, "foo_service", []string{"foo.com"}, fooVCL)
-		var stdout, stderr strings.Builder
-		code := run([]string{"-cmdfile", "none", "-vclfile", "none", "-test-route", "http:///no-host", path}, &stdout, &stderr)
-		if code != 1 {
-			t.Fatalf("want exit 1, got %d", code)
-		}
-		if !strings.Contains(stderr.String(), "no hostname") {
-			t.Errorf("want 'no hostname' error, got: %s", stderr.String())
-		}
-	})
-
-	t.Run("unknown flag", func(t *testing.T) {
-		var stdout, stderr strings.Builder
-		code := run([]string{"-unknown-flag"}, &stdout, &stderr)
-		if code != 2 {
-			t.Fatalf("want exit 2, got %d", code)
-		}
-	})
-
-	t.Run("write vclfile fails", func(t *testing.T) {
-		dir := t.TempDir()
-		path := writeRoutesYAML(t, dir, "routes.yaml",
-			"routes:\n  - name: foo\n    hostnames:\n      - foo.com\n")
-		var stdout, stderr strings.Builder
-		code := run([]string{"-vclfile", "/nonexistent/dir/routing.vcl", "-cmdfile", "none", path}, &stdout, &stderr)
-		if code != 1 {
-			t.Fatalf("want exit 1 for bad vclfile path, got %d", code)
-		}
-	})
-
-	t.Run("write cmdfile fails", func(t *testing.T) {
-		dir := t.TempDir()
-		vclPath := filepath.Join(dir, "routing.vcl")
-		path := writeRoutesYAML(t, dir, "routes.yaml",
-			"routes:\n  - name: foo\n    hostnames:\n      - foo.com\n")
-		var stdout, stderr strings.Builder
-		code := run([]string{"-vclfile", vclPath, "-cmdfile", "/nonexistent/dir/cmdfile", path}, &stdout, &stderr)
-		if code != 1 {
-			t.Fatalf("want exit 1 for bad cmdfile path, got %d", code)
 		}
 	})
 }
@@ -904,7 +499,7 @@ func TestRunErrors(t *testing.T) {
 
 func TestParseVCLErrors(t *testing.T) {
 	t.Run("file not found", func(t *testing.T) {
-		_, err := parseVCL("/nonexistent/path/foo.vcl")
+		_, err := ParseVCL("/nonexistent/path/foo.vcl")
 		if err == nil {
 			t.Fatal("expected error")
 		}
@@ -914,7 +509,7 @@ func TestParseVCLErrors(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "no_fm.vcl")
 		os.WriteFile(path, []byte("vcl 4.1;\n"), 0644)
-		_, err := parseVCL(path)
+		_, err := ParseVCL(path)
 		if err == nil || !strings.Contains(err.Error(), "/* routing") {
 			t.Fatalf("want frontmatter error, got %v", err)
 		}
@@ -924,7 +519,7 @@ func TestParseVCLErrors(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "bad.vcl")
 		os.WriteFile(path, []byte("/* routing\nname: [unclosed\n*/\nvcl 4.1;\n"), 0644)
-		_, err := parseVCL(path)
+		_, err := ParseVCL(path)
 		if err == nil || !strings.Contains(err.Error(), "invalid YAML") {
 			t.Fatalf("want YAML error, got %v", err)
 		}
@@ -936,7 +531,7 @@ func TestParseVCLRelativeTLSPaths(t *testing.T) {
 	content := "/* routing\nname: foo\nhostnames:\n  - foo.com\ntls:\n  - cert: cert.pem\n    key: key.pem\n*/\nvcl 4.1;\n"
 	path := filepath.Join(dir, "foo.vcl")
 	os.WriteFile(path, []byte(content), 0644)
-	cfg, err := parseVCL(path)
+	cfg, err := ParseVCL(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -952,7 +547,7 @@ func TestParseVCLRelativeTLSPaths(t *testing.T) {
 
 func TestParseRoutesErrors(t *testing.T) {
 	t.Run("file not found", func(t *testing.T) {
-		_, err := parseRoutes("/nonexistent/routes.yaml")
+		_, err := ParseRoutes("/nonexistent/routes.yaml")
 		if err == nil {
 			t.Fatal("expected error")
 		}
@@ -961,7 +556,7 @@ func TestParseRoutesErrors(t *testing.T) {
 	t.Run("bad yaml syntax", func(t *testing.T) {
 		dir := t.TempDir()
 		path := writeRoutesYAML(t, dir, "routes.yaml", "routes: [unclosed\n")
-		_, err := parseRoutes(path)
+		_, err := ParseRoutes(path)
 		if err == nil || !strings.Contains(err.Error(), "invalid YAML") {
 			t.Fatalf("want YAML error, got %v", err)
 		}
@@ -971,7 +566,7 @@ func TestParseRoutesErrors(t *testing.T) {
 		dir := t.TempDir()
 		path := writeRoutesYAML(t, dir, "routes.yaml",
 			"routes:\n  - name: foo\n    hostnames:\n      - foo.com\n    vclPath: nonexistent.vcl\n")
-		_, err := parseRoutes(path)
+		_, err := ParseRoutes(path)
 		if err == nil || !strings.Contains(err.Error(), "vclPath:") {
 			t.Fatalf("want vclPath error, got %v", err)
 		}
@@ -982,7 +577,7 @@ func TestParseRoutesErrors(t *testing.T) {
 		vclFile := writeTempVCL(t, dir, "foo_service", []string{"foo.com"})
 		path := writeRoutesYAML(t, dir, "routes.yaml",
 			fmt.Sprintf("routes:\n  - name: foo\n    hostnames:\n      - foo.com\n    vclPath: %q\n    tls:\n      - pem: nonexistent.pem\n", vclFile))
-		_, err := parseRoutes(path)
+		_, err := ParseRoutes(path)
 		if err == nil || !strings.Contains(err.Error(), "tls:") {
 			t.Fatalf("want tls error, got %v", err)
 		}
@@ -990,41 +585,8 @@ func TestParseRoutesErrors(t *testing.T) {
 }
 
 func TestWriteFileAtomicError(t *testing.T) {
-	err := writeFileAtomic("/nonexistent/dir/that/does/not/exist/file.txt", "content")
+	err := WriteFileAtomic("/nonexistent/dir/that/does/not/exist/file.txt", "content")
 	if err == nil {
 		t.Fatal("expected error writing to nonexistent dir")
-	}
-}
-
-func TestRunReloadTimeoutFlag(t *testing.T) {
-	dir := t.TempDir()
-	fooVCL := writeTempVCL(t, dir, "foo_service", []string{"foo.com"})
-	path := routesYAMLFor(t, dir, "foo_service", []string{"foo.com"}, fooVCL)
-	var stdout, stderr strings.Builder
-	// A very short timeout still succeeds in connecting to a valid instance
-	// but here we test that the flag is accepted and connect failure still
-	// returns exit 1 (not a flag parse error).
-	code := run([]string{"-reload", "-timeout", "1s", "-n", "nonexistent_instance_xyz",
-		"-cmdfile", "none", "-vclfile", "none", path}, &stdout, &stderr)
-	if code != 1 {
-		t.Fatalf("want exit 1 for bad instance with -timeout, got %d", code)
-	}
-	// Must be a connect error, not a flag parse error.
-	if strings.Contains(stderr.String(), "flag") {
-		t.Errorf("unexpected flag error: %s", stderr.String())
-	}
-}
-
-func TestRunTimeoutWithoutReloadWarns(t *testing.T) {
-	dir := t.TempDir()
-	fooVCL := writeTempVCL(t, dir, "foo_service", []string{"foo.com"})
-	path := routesYAMLFor(t, dir, "foo_service", []string{"foo.com"}, fooVCL)
-	var stdout, stderr strings.Builder
-	code := run([]string{"-timeout", "5s", "-cmdfile", "none", "-vclfile", "none", path}, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("want exit 0, got %d: %s", code, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "no effect") {
-		t.Errorf("want 'no effect' warning in stderr, got: %s", stderr.String())
 	}
 }

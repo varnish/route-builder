@@ -60,7 +60,7 @@ Pass a single `.yaml`/`.yml` file, or one or more `.vcl` files with embedded rou
 ## Installation
 
 ```bash
-go install github.com/varnish/route-builder@latest
+go install github.com/varnish/route-builder/cmd/route-builder@latest
 ```
 
 Or build from source:
@@ -68,7 +68,26 @@ Or build from source:
 ```bash
 git clone https://github.com/varnish/route-builder
 cd route-builder
-go build -o route-builder .
+go build -o route-builder ./cmd/route-builder
+```
+
+The module root is also importable as a Go library:
+
+```go
+import routebuilder "github.com/varnish/route-builder"
+
+configs, err := routebuilder.ParseRoutes("routes.yaml")
+if err != nil {
+    // handle error
+}
+if err := routebuilder.ValidateConfigs(configs); err != nil {
+    // handle error
+}
+ts := routebuilder.NewTimestamp()
+builder := routebuilder.NewBuilder(routebuilder.WithConstantNamer(ts))
+routingVCL, err := builder.BuildRoutingVCL(configs)
+plan, err := builder.BuildCmdfilePlan(configs, "/etc/varnish/routing.vcl")
+_, _ = routingVCL, plan
 ```
 
 A systemd service unit is provided in [`contrib/systemd/`](contrib/systemd/) for production deployments.
@@ -123,6 +142,38 @@ route-builder /etc/varnish/services/*.vcl
 
 Use `-yamlfile` to export the parsed frontmatter to a YAML manifest if you want to migrate to the YAML workflow later.
 
+### Route names
+
+Route names become part of generated Varnish VCL, label, and TLS certificate object names. They must match:
+
+```text
+[a-zA-Z][a-zA-Z0-9_-]*
+```
+
+Names may contain hyphens and underscores, must start with a letter, and are limited to 64 characters. The name `routing` is reserved.
+
+The builder APIs validate generated object-name components before rendering so direct library callers get an error instead of malformed VCL or CLI output.
+
+### Cmdfile planning and cleanup
+
+Library callers that manage a live Varnish instance can build a reusable command plan instead of rendering a flat cmdfile directly:
+
+```go
+builder := routebuilder.NewBuilder(routebuilder.WithMD5Namer())
+plan, err := builder.BuildCmdfilePlan(configs, "/etc/varnish/routing.vcl", routebuilder.WithExistingVCLNames(existingNames...))
+if err != nil {
+    // handle error
+}
+for _, command := range plan.Commands() {
+    // apply with varnishadm or write to a cmdfile
+    _ = command
+}
+```
+
+`WithExistingVCLNames` skips `vcl.load` and `vcl.label` commands whose target objects already exist; `vcl.use` is still emitted. Use `WithConstantNamer(suffix)` for constant-suffix names (including timestamp-style names) or `WithMD5Namer()` for content-addressed names. With MD5 naming, route VCL/label names are hashed from each route's `vclPath` content and the routing VCL name is hashed from generated routing VCL content.
+
+For cleanup, use `builder.ManagedVCLNames(configs, routingContent)` to compute the current keep set, then pass it to `CleanupCommandsFromNames` to produce dependency-ordered `vcl.discard` commands for stale `rb-*` VCL objects.
+
 ### TLS
 
 Each route can carry one or more TLS certificates — either a PEM bundle or a separate cert + key pair:
@@ -154,7 +205,7 @@ Ports are stripped automatically. TLS requests use the SNI hostname.
 `-reload` applies new configuration to a running Varnish instance without dropping traffic. route-builder performs an 8-stage atomic operation over the admin protocol:
 
 1. Snapshot existing route-builder VCL names and TLS cert IDs
-2. Load each per-route VCL and create its timestamped label
+2. Load each per-route VCL and create its generated label
 3. Compile and load the routing VCL inline
 4. Load new TLS certificates
 5. Commit new TLS certificates

@@ -1,4 +1,4 @@
-package main
+package routebuilder
 
 import (
 	"context"
@@ -124,17 +124,17 @@ func TestRoutingTwoServices(t *testing.T) {
 	fooPath := writeRouteVCL(t, dir, "foo_service", []string{"foo.com", "www.foo.com"})
 	barPath := writeRouteVCL(t, dir, "bar_service", []string{"bar.com"})
 
-	fooCfg, err := parseVCL(fooPath)
+	fooCfg, err := ParseVCL(fooPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	barCfg, err := parseVCL(barPath)
+	barCfg, err := ParseVCL(barPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	configs := []VCLConfig{fooCfg, barCfg}
 
-	routingVCL, err := buildRoutingVCL(configs, ts)
+	routingVCL, err := NewBuilder(WithConstantNamer(ts)).BuildRoutingVCL(configs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,13 +169,13 @@ func TestRoutingWildcard(t *testing.T) {
 	ts := time.Now().Format("2006-01-02T15-04-05_0")
 
 	wcPath := writeRouteVCL(t, dir, "wc_service", []string{"*.foo.com"})
-	wcCfg, err := parseVCL(wcPath)
+	wcCfg, err := ParseVCL(wcPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	configs := []VCLConfig{wcCfg}
 
-	routingVCL, err := buildRoutingVCL(configs, ts)
+	routingVCL, err := NewBuilder(WithConstantNamer(ts)).BuildRoutingVCL(configs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,12 +218,12 @@ func TestRoutingNoMatch(t *testing.T) {
 	ts := time.Now().Format("2006-01-02T15-04-05_0")
 
 	fooPath := writeRouteVCL(t, dir, "foo_service", []string{"foo.com"})
-	fooCfg, err := parseVCL(fooPath)
+	fooCfg, err := ParseVCL(fooPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	routingVCL, err := buildRoutingVCL([]VCLConfig{fooCfg}, ts)
+	routingVCL, err := NewBuilder(WithConstantNamer(ts)).BuildRoutingVCL([]VCLConfig{fooCfg})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,12 +249,12 @@ func TestRoutingMultipleHostnames(t *testing.T) {
 
 	hostnames := []string{"svc.com", "www.svc.com", "api.svc.com"}
 	svcPath := writeRouteVCL(t, dir, "svc", hostnames)
-	svcCfg, err := parseVCL(svcPath)
+	svcCfg, err := ParseVCL(svcPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	routingVCL, err := buildRoutingVCL([]VCLConfig{svcCfg}, ts)
+	routingVCL, err := NewBuilder(WithConstantNamer(ts)).BuildRoutingVCL([]VCLConfig{svcCfg})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +281,7 @@ func TestReloadCertCleanup(t *testing.T) {
 	certFile, keyFile := testCertFiles(t)
 
 	fooPath := writeRouteVCL(t, dir, "foo_service", []string{"foo.com"})
-	fooCfg, err := parseVCL(fooPath)
+	fooCfg, err := ParseVCL(fooPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,9 +292,9 @@ func TestReloadCertCleanup(t *testing.T) {
 	defer v.Stop()
 
 	// First reload: establishes rb-cert-* state.
-	ts1 := newTimestamp()
-	if err := reloadVarnish(context.Background(), admConnect(t, v), configs, ts1, os.Stderr); err != nil {
-		t.Fatalf("first reloadVarnish: %v", err)
+	ts1 := NewTimestamp()
+	if err := NewBuilder(WithConstantNamer(ts1)).ReloadVarnish(context.Background(), admConnect(t, v), configs, os.Stderr); err != nil {
+		t.Fatalf("first ReloadVarnish: %v", err)
 	}
 
 	// Snapshot rb-cert-* IDs created by the first reload.
@@ -313,9 +313,9 @@ func TestReloadCertCleanup(t *testing.T) {
 	}
 
 	// Second reload with the same config: should load new rb-cert-* IDs and discard the first ones.
-	ts2 := newTimestamp()
-	if err := reloadVarnish(context.Background(), admConnect(t, v), configs, ts2, os.Stderr); err != nil {
-		t.Fatalf("second reloadVarnish: %v", err)
+	ts2 := NewTimestamp()
+	if err := NewBuilder(WithConstantNamer(ts2)).ReloadVarnish(context.Background(), admConnect(t, v), configs, os.Stderr); err != nil {
+		t.Fatalf("second ReloadVarnish: %v", err)
 	}
 
 	afterCerts, err := admConnect(t, v).TLSCertList(context.Background())
@@ -357,17 +357,17 @@ func TestRoutingViaSNI(t *testing.T) {
 	fooPath := writeRouteVCL(t, dir, "foo_service", []string{"foo.com", "www.foo.com"})
 	barPath := writeRouteVCL(t, dir, "bar_service", []string{"bar.com"})
 
-	fooCfg, err := parseVCL(fooPath)
+	fooCfg, err := ParseVCL(fooPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	barCfg, err := parseVCL(barPath)
+	barCfg, err := ParseVCL(barPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	configs := []VCLConfig{fooCfg, barCfg}
 
-	routingVCL, err := buildRoutingVCL(configs, ts)
+	routingVCL, err := NewBuilder(WithConstantNamer(ts)).BuildRoutingVCL(configs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -413,17 +413,17 @@ func TestReload(t *testing.T) {
 	fooPath := writeRouteVCL(t, dir, "foo_service", []string{"foo.com"})
 	barPath := writeRouteVCL(t, dir, "bar_service", []string{"bar.com"})
 
-	fooCfg, err := parseVCL(fooPath)
+	fooCfg, err := ParseVCL(fooPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	barCfg, err := parseVCL(barPath)
+	barCfg, err := ParseVCL(barPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	initialConfigs := []VCLConfig{fooCfg, barCfg}
 
-	routingVCL1, err := buildRoutingVCL(initialConfigs, ts1)
+	routingVCL1, err := NewBuilder(WithConstantNamer(ts1)).BuildRoutingVCL(initialConfigs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,15 +448,15 @@ func TestReload(t *testing.T) {
 
 	// New config: foo_service updated, bar_service removed, baz_service added
 	bazPath := writeRouteVCL(t, dir, "baz_service", []string{"baz.com"})
-	bazCfg, err := parseVCL(bazPath)
+	bazCfg, err := ParseVCL(bazPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	newConfigs := []VCLConfig{fooCfg, bazCfg}
 
-	ts2 := newTimestamp()
-	if err := reloadVarnish(context.Background(), admConnect(t, v), newConfigs, ts2, os.Stderr); err != nil {
-		t.Fatalf("reloadVarnish: %v", err)
+	ts2 := NewTimestamp()
+	if err := NewBuilder(WithConstantNamer(ts2)).ReloadVarnish(context.Background(), admConnect(t, v), newConfigs, os.Stderr); err != nil {
+		t.Fatalf("ReloadVarnish: %v", err)
 	}
 
 	resp = doGet(t, v, "foo.com")
@@ -489,73 +489,6 @@ func TestReload(t *testing.T) {
 	}
 }
 
-func TestRunReload(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	ts := time.Now().Format("2006-01-02T15-04-05_0")
-
-	fooPath := writeRouteVCL(t, dir, "foo_service", []string{"foo.com"})
-	fooCfg, err := parseVCL(fooPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	configs := []VCLConfig{fooCfg}
-
-	routingVCL, err := buildRoutingVCL(configs, ts)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	v := vtest.New().VclString(`backend default none;`).AssertStart(t)
-	defer v.Stop()
-
-	loadLabels(t, v, configs, ts)
-	activateRoutingVCL(t, v, dir, routingVCL, ts)
-
-	routesYAML := routesYAMLFor(t, dir, "foo_service", []string{"foo.com"}, fooPath)
-
-	var stdout, stderr strings.Builder
-	code := run([]string{"-reload", "-n", v.Name(), "-cmdfile", "none", "-vclfile", "none", routesYAML}, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("exit %d stderr=%s", code, stderr.String())
-	}
-	if !strings.Contains(stdout.String(), "reloaded 1 route(s)") {
-		t.Errorf("want 'reloaded 1 route(s)' in stdout, got: %s", stdout.String())
-	}
-}
-
-func TestRunReloadErrors(t *testing.T) {
-	t.Run("no args", func(t *testing.T) {
-		var stdout, stderr strings.Builder
-		code := run([]string{"-reload"}, &stdout, &stderr)
-		if code != 1 {
-			t.Fatalf("want exit 1, got %d", code)
-		}
-	})
-
-	t.Run("bad routes file", func(t *testing.T) {
-		dir := t.TempDir()
-		path := writeRoutesYAML(t, dir, "bad.yaml", "routes: [unclosed\n")
-		var stdout, stderr strings.Builder
-		code := run([]string{"-reload", "-cmdfile", "none", "-vclfile", "none", path}, &stdout, &stderr)
-		if code != 1 {
-			t.Fatalf("want exit 1, got %d", code)
-		}
-	})
-
-	t.Run("connect fails", func(t *testing.T) {
-		dir := t.TempDir()
-		path := writeRoutesYAML(t, dir, "routes.yaml",
-			"routes:\n  - name: foo\n    hostnames:\n      - foo.com\n")
-		var stdout, stderr strings.Builder
-		code := run([]string{"-reload", "-n", "nonexistent_instance_xyz", "-cmdfile", "none", "-vclfile", "none", path}, &stdout, &stderr)
-		if code != 1 {
-			t.Fatalf("want exit 1 for bad instance, got %d", code)
-		}
-	})
-}
-
 func TestReloadRollbackWithTLS(t *testing.T) {
 	t.Parallel()
 
@@ -563,7 +496,7 @@ func TestReloadRollbackWithTLS(t *testing.T) {
 	certFile, keyFile := testCertFiles(t)
 
 	fooPath := writeRouteVCL(t, dir, "foo_service", []string{"foo.com"})
-	fooCfg, err := parseVCL(fooPath)
+	fooCfg, err := ParseVCL(fooPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -592,8 +525,8 @@ func TestReloadRollbackWithTLS(t *testing.T) {
 		},
 	}}
 
-	ts := newTimestamp()
-	err = reloadVarnish(context.Background(), admConnect(t, v), failConfigs, ts, os.Stderr)
+	ts := NewTimestamp()
+	err = NewBuilder(WithConstantNamer(ts)).ReloadVarnish(context.Background(), admConnect(t, v), failConfigs, os.Stderr)
 	if err == nil {
 		t.Fatal("expected reload to fail on bad TLS cert")
 	}
@@ -629,13 +562,13 @@ func TestReloadRollback(t *testing.T) {
 	ts := time.Now().Format("2006-01-02T15-04-05_0")
 
 	fooPath := writeRouteVCL(t, dir, "foo_service", []string{"foo.com"})
-	fooCfg, err := parseVCL(fooPath)
+	fooCfg, err := ParseVCL(fooPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	configs := []VCLConfig{fooCfg}
 
-	routingVCL, err := buildRoutingVCL(configs, ts)
+	routingVCL, err := NewBuilder(WithConstantNamer(ts)).BuildRoutingVCL(configs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -665,8 +598,8 @@ func TestReloadRollback(t *testing.T) {
 		VclPath:   "/nonexistent/bad.vcl",
 		Hostnames: []string{"bad.com"},
 	})
-	ts2 := newTimestamp()
-	err = reloadVarnish(context.Background(), admConnect(t, v), failConfigs, ts2, os.Stderr)
+	ts2 := NewTimestamp()
+	err = NewBuilder(WithConstantNamer(ts2)).ReloadVarnish(context.Background(), admConnect(t, v), failConfigs, os.Stderr)
 	if err == nil {
 		t.Fatal("expected reload to fail, but it succeeded")
 	}

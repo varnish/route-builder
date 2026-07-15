@@ -6,15 +6,21 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/varnish/varnish-go/adm"
+
+	rb "github.com/varnish/route-builder"
 )
 
 // Version is set at build time via -ldflags "-X main.Version=x.y.z".
 var Version = "dev"
+
+func main() {
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
 
 func run(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("route-builder", flag.ContinueOnError)
@@ -44,7 +50,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	files, err := expandGlobs(fs.Args())
+	files, err := rb.ExpandGlobs(fs.Args())
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -54,23 +60,23 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	var configs []VCLConfig
+	var configs []rb.VCLConfig
 	switch {
-	case len(files) == 1 && isYAMLFile(files[0]):
+	case len(files) == 1 && rb.IsYAMLFile(files[0]):
 		if *yamlfileOut != "" {
 			fmt.Fprintln(stderr, "error: -yamlfile is incompatible with YAML input")
 			return 1
 		}
 		var err error
-		configs, err = parseRoutes(files[0])
+		configs, err = rb.ParseRoutes(files[0])
 		if err != nil {
 			fmt.Fprintf(stderr, "%s: %v\n", files[0], err)
 			return 1
 		}
 
-	case allVCLFiles(files):
+	case rb.AllVCLFiles(files):
 		for _, f := range files {
-			cfg, err := parseVCL(f)
+			cfg, err := rb.ParseVCL(f)
 			if err != nil {
 				fmt.Fprintf(stderr, "%s: %v\n", f, err)
 				return 1
@@ -83,11 +89,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	if err := checkDuplicateNames(configs); err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
-	}
-	if err := checkDuplicateHostnames(configs); err != nil {
+	if err := rb.ValidateConfigs(configs); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
@@ -103,7 +105,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "no hostname in URL %q\n", *testRouteURL)
 			return 1
 		}
-		cfg := findRoute(host, configs)
+		cfg := rb.FindRoute(host, configs)
 		if cfg == nil {
 			fmt.Fprintf(stdout, "host %q: no route matched\n", host)
 			return 1
@@ -118,26 +120,27 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *yamlfileOut != "" {
-		data, err := marshalRoutes(configs)
+		data, err := rb.MarshalRoutes(configs)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
-		if err := writeOutput(*yamlfileOut, string(data), stdout); err != nil {
+		if err := rb.WriteOutput(*yamlfileOut, string(data), stdout); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
 	}
 
-	timestamp := newTimestamp()
+	timestamp := rb.NewTimestamp()
+	builder := rb.NewBuilder(rb.WithConstantNamer(timestamp))
 
 	if *vclfileOut != "none" {
-		content, err := buildRoutingVCL(configs, timestamp)
+		content, err := builder.BuildRoutingVCL(configs)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
-		if err := writeOutput(*vclfileOut, content, stdout); err != nil {
+		if err := rb.WriteOutput(*vclfileOut, content, stdout); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
@@ -156,12 +159,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 				return 1
 			}
 		}
-		content, err := buildCmdfile(configs, routingPath, timestamp)
+		plan, err := builder.BuildCmdfilePlan(configs, routingPath)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
-		if err := writeOutput(*cmdfileOut, content, stdout); err != nil {
+		if err := rb.WriteOutput(*cmdfileOut, plan.String(), stdout); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
@@ -186,7 +189,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		defer conn.Close()
-		if err := reloadVarnish(ctx, conn, configs, timestamp, stderr); err != nil {
+		if err := builder.ReloadVarnish(ctx, conn, configs, stderr); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
@@ -194,21 +197,4 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	return 0
-}
-
-func newTimestamp() string {
-	now := time.Now()
-	return now.Format("2006-01-02T15-04-05") + fmt.Sprintf("_%09d", now.Nanosecond())
-}
-
-func findRoute(host string, configs []VCLConfig) *VCLConfig {
-	host = strings.ToLower(host)
-	for i := range configs {
-		for _, h := range configs[i].Hostnames {
-			if hostnamesOverlap(host, h) {
-				return &configs[i]
-			}
-		}
-	}
-	return nil
 }
